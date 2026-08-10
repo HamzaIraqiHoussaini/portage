@@ -13,6 +13,12 @@ const state = {
   usageLast: null,
   usageChat: null,
   usageSession: loadSessionUsage(),
+  streamAbort: null,
+  streaming: false,
+  streamChatId: null,
+  workspaceFiles: [],
+  mentionIndex: 0,
+  lastFileChanges: [],
 };
 
 const MATH_DELIMITERS = [
@@ -59,25 +65,50 @@ function saveSessionUsage() {
   localStorage.setItem(SESSION_KEY, JSON.stringify(state.usageSession));
 }
 
-function formatTokens(usage, { zeroOk = false } = {}) {
-  if (!usage) return zeroOk ? "0 → 0 · 0" : "—";
-  const inp = Number(usage.input_tokens) || 0;
-  const out = Number(usage.output_tokens) || 0;
-  const total = Number(usage.total_tokens) || inp + out;
-  if (!total && !inp && !out) return zeroOk ? "0 → 0 · 0" : "—";
-  return `${fmt(inp)} → ${fmt(out)} · ${fmt(total)}`;
+function fmtExact(n) {
+  return new Intl.NumberFormat("en-US").format(Number(n) || 0);
 }
 
-function fmt(n) {
-  return new Intl.NumberFormat("en", { notation: n >= 10000 ? "compact" : "standard" }).format(n);
+function fmtCompact(n) {
+  const v = Number(n) || 0;
+  if (v >= 10000) return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(v);
+  return fmtExact(v);
+}
+
+function usageTotal(usage) {
+  if (!usage) return 0;
+  const inp = Number(usage.input_tokens) || 0;
+  const out = Number(usage.output_tokens) || 0;
+  return Number(usage.total_tokens) || inp + out;
+}
+
+function formatUsageTip(usage) {
+  if (!usage) return "No token data yet";
+  const inp = Number(usage.input_tokens) || 0;
+  const out = Number(usage.output_tokens) || 0;
+  const total = usageTotal(usage);
+  return `In ${fmtExact(inp)} · Out ${fmtExact(out)} · Total ${fmtExact(total)}`;
+}
+
+function formatTokens(usage, { zeroOk = false } = {}) {
+  const total = usageTotal(usage);
+  if (!total && !zeroOk) return "—";
+  return fmtCompact(total);
 }
 
 function updateTokenMeter() {
-  if ($("token-last")) $("token-last").textContent = formatTokens(state.usageLast);
-  if ($("token-chat")) $("token-chat").textContent = formatTokens(state.usageChat);
-  if ($("token-session")) $("token-session").textContent = formatTokens(state.usageSession, { zeroOk: true });
+  const chatEl = $("token-chat");
+  const chatTip = $("token-chat-tip");
+  const sessionChip = $("token-session");
+  const sessionVal = $("token-session-value");
+  const sessionTip = $("token-session-tip");
+  if (chatEl) chatEl.textContent = formatTokens(state.usageChat);
+  if (chatTip) chatTip.textContent = formatUsageTip(state.usageChat);
+  if (sessionVal) sessionVal.textContent = fmtCompact(usageTotal(state.usageSession));
+  if (sessionTip) sessionTip.textContent = formatUsageTip(state.usageSession);
   const meter = $("token-meter");
   if (meter) meter.hidden = !state.chatId;
+  if (sessionChip) sessionChip.hidden = !state.chatId;
 }
 
 function chatKey(chat) {
@@ -90,14 +121,17 @@ function activeChatKey() {
 
 function addSessionUsage(usage) {
   if (!usage) return;
+  const input = Number(usage.input_tokens) || 0;
+  const output = Number(usage.output_tokens) || 0;
+  const total = usageTotal(usage);
   state.usageLast = {
-    input_tokens: Number(usage.input_tokens) || 0,
-    output_tokens: Number(usage.output_tokens) || 0,
-    total_tokens: Number(usage.total_tokens) || 0,
+    input_tokens: input,
+    output_tokens: output,
+    total_tokens: total,
   };
-  for (const key of ["input_tokens", "output_tokens", "total_tokens"]) {
-    state.usageSession[key] = (Number(state.usageSession[key]) || 0) + (Number(usage[key]) || 0);
-  }
+  state.usageSession.input_tokens = (Number(state.usageSession.input_tokens) || 0) + input;
+  state.usageSession.output_tokens = (Number(state.usageSession.output_tokens) || 0) + output;
+  state.usageSession.total_tokens = (Number(state.usageSession.total_tokens) || 0) + total;
   saveSessionUsage();
   updateTokenMeter();
 }
@@ -161,7 +195,7 @@ function setComposerEnabled(enabled, { connected = state.connected } = {}) {
     $("composer-hint").textContent = "Connect a provider in Settings to send";
   } else {
     $("composer-hint").textContent =
-      "Enter to send · / for skills · Shift+Enter newline · markdown & LaTeX";
+      "Enter to send · / skills · @ files · Esc stops · Shift+Enter newline";
   }
 }
 
@@ -420,17 +454,188 @@ function createToolSummary(tools) {
   return details;
 }
 
-function createBubble(role, text) {
+function pathFromToolInput(input) {
+  if (!input || typeof input !== "object") return "";
+  return String(input.path || input.file_path || input.target_file || "");
+}
+
+function createBlocksPanel(blocks, { checkpointId = null } = {}) {
+  if (!blocks || !blocks.length) return null;
+  const wrap = document.createElement("div");
+  wrap.className = "blocks-panel";
+  const fileChanges = [];
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    if (block.type === "thinking") {
+      const details = document.createElement("details");
+      details.className = "think-card";
+      const summary = document.createElement("summary");
+      summary.textContent = "Thinking";
+      details.appendChild(summary);
+      const pre = document.createElement("pre");
+      pre.textContent = String(block.text || "").slice(0, 4000);
+      details.appendChild(pre);
+      wrap.appendChild(details);
+    } else if (block.type === "tool_use") {
+      const row = document.createElement("div");
+      row.className = "tool-card";
+      const path = pathFromToolInput(block.input);
+      row.innerHTML = `<span class="tool-name">${escapeHtml(block.name || "tool")}</span>`;
+      if (path) {
+        const p = document.createElement("span");
+        p.className = "tool-path";
+        p.textContent = path;
+        row.appendChild(p);
+      }
+      wrap.appendChild(row);
+    } else if (block.type === "tool_result") {
+      const details = document.createElement("details");
+      details.className = "tool-result-card";
+      const summary = document.createElement("summary");
+      summary.textContent = block.is_error ? "Tool error" : "Tool result";
+      details.appendChild(summary);
+      const pre = document.createElement("pre");
+      pre.textContent = String(block.content || "").slice(0, 4000);
+      details.appendChild(pre);
+      wrap.appendChild(details);
+    } else if (block.type === "file_change") {
+      fileChanges.push(block);
+    }
+  }
+  if (fileChanges.length) {
+    wrap.appendChild(createFilesChangedStrip(fileChanges, { checkpointId }));
+  }
+  return wrap.childNodes.length ? wrap : null;
+}
+
+function createFilesChangedStrip(changes, { checkpointId = null } = {}) {
+  const strip = document.createElement("div");
+  strip.className = "files-changed";
+  const label = document.createElement("button");
+  label.type = "button";
+  label.className = "files-changed-btn";
+  label.textContent = `${changes.length} file${changes.length === 1 ? "" : "s"} changed`;
+  label.addEventListener("click", () => openDiffDrawer(changes));
+  strip.appendChild(label);
+  const names = document.createElement("span");
+  names.className = "files-changed-names";
+  names.textContent = changes
+    .map((c) => c.path)
+    .filter(Boolean)
+    .slice(0, 4)
+    .join(", ");
+  strip.appendChild(names);
+  if (checkpointId) {
+    const reject = document.createElement("button");
+    reject.type = "button";
+    reject.className = "ghost tiny reject-btn";
+    reject.textContent = "Reject";
+    reject.title = "Restore files from checkpoint";
+    reject.addEventListener("click", () => {
+      const paths = changes.map((c) => c.path).filter(Boolean);
+      const preview = paths.slice(0, 8).join("\n") + (paths.length > 8 ? "\n…" : "");
+      const ok = window.confirm(
+        `Restore ${paths.length} file${paths.length === 1 ? "" : "s"} from checkpoint?\n\n${preview}`
+      );
+      if (!ok) return;
+      restoreCheckpoint(checkpointId, strip);
+    });
+    strip.appendChild(reject);
+  }
+  return strip;
+}
+
+function openDiffDrawer(changes) {
+  const drawer = $("diff-drawer");
+  const list = $("diff-file-list");
+  const view = $("diff-view");
+  const backdrop = $("diff-backdrop");
+  if (!drawer || !list || !view) return;
+  state.lastFileChanges = changes || [];
+  list.innerHTML = "";
+  view.textContent = "";
+  (changes || []).forEach((c, i) => {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = `${c.op || "update"} · ${c.path || "file"}`;
+    btn.addEventListener("click", () => {
+      list.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      view.textContent = c.diff || "(no diff available)";
+    });
+    if (i === 0) {
+      btn.classList.add("active");
+      view.textContent = c.diff || "(no diff available)";
+    }
+    li.appendChild(btn);
+    list.appendChild(li);
+  });
+  drawer.hidden = false;
+  if (backdrop) backdrop.hidden = false;
+}
+
+function closeDiffDrawer() {
+  const drawer = $("diff-drawer");
+  const backdrop = $("diff-backdrop");
+  if (drawer) drawer.hidden = true;
+  if (backdrop) backdrop.hidden = true;
+}
+
+async function restoreCheckpoint(checkpointId, stripEl = null) {
+  if (!state.chatId || !checkpointId) return;
+  try {
+    const result = await api("/api/checkpoints/restore", {
+      method: "POST",
+      body: JSON.stringify({ chat_id: state.chatId, checkpoint_id: checkpointId }),
+    });
+    const note = $("sync-note");
+    if (note) {
+      note.hidden = false;
+      const n = (result.restored || []).length + (result.deleted || []).length;
+      note.textContent = `Restored checkpoint (${n} path${n === 1 ? "" : "s"}).`;
+    }
+    if (stripEl) {
+      stripEl.classList.add("restored");
+      const btn = stripEl.querySelector(".files-changed-btn");
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Changes rejected";
+      }
+      const reject = stripEl.querySelector(".reject-btn");
+      if (reject) reject.remove();
+      const names = stripEl.querySelector(".files-changed-names");
+      if (names) names.textContent = "Files restored from checkpoint";
+    }
+    closeDiffDrawer();
+  } catch (err) {
+    setConnectStatus(String(err.message || err), "err");
+  }
+}
+
+function createBubble(role, text, usage = null, extras = {}) {
+  const blocks = extras.blocks || null;
+  const fileChanges = extras.file_changes || null;
+  const checkpointId = extras.checkpoint_id || null;
   const { text: cleaned, tools } = extractTools(text);
-  if (!cleaned && tools.length === 0) return null;
+  const hasRich = (blocks && blocks.length) || (fileChanges && fileChanges.length);
+  if (!cleaned && tools.length === 0 && !hasRich && role !== "assistant") return null;
   const div = document.createElement("article");
   div.className = `bubble ${role === "error" ? "error" : role}`;
-  if (!cleaned && tools.length) div.classList.add("tools-only");
+  if (!cleaned && (tools.length || hasRich)) div.classList.add("tools-only");
   const roleEl = document.createElement("span");
   roleEl.className = "role";
   roleEl.textContent = role;
   div.appendChild(roleEl);
-  if (tools.length) div.appendChild(createToolSummary(tools));
+
+  const panel = createBlocksPanel(blocks, { checkpointId });
+  if (panel) div.appendChild(panel);
+  else if (tools.length) div.appendChild(createToolSummary(tools));
+
+  if (fileChanges && fileChanges.length && !(blocks || []).some((b) => b.type === "file_change")) {
+    div.appendChild(createFilesChangedStrip(fileChanges, { checkpointId }));
+  }
+
   if (cleaned) {
     const body = document.createElement("div");
     body.className = "bubble-body";
@@ -438,7 +643,157 @@ function createBubble(role, text) {
     renderMath(body);
     div.appendChild(body);
   }
+  if (role === "assistant" && usage && usageTotal(usage) > 0) {
+    div.appendChild(createUsageBadge(usage));
+  }
   return div;
+}
+
+function createUsageBadge(usage) {
+  const badge = document.createElement("span");
+  badge.className = "bubble-usage";
+  badge.tabIndex = 0;
+  const total = usageTotal(usage);
+  badge.appendChild(document.createTextNode(`${fmtCompact(total)} tokens`));
+  const tip = document.createElement("span");
+  tip.className = "token-tip";
+  tip.textContent = formatUsageTip(usage);
+  tip.setAttribute("aria-hidden", "true");
+  badge.appendChild(tip);
+  return badge;
+}
+
+function createStreamingBubble() {
+  const div = document.createElement("article");
+  div.className = "bubble assistant streaming";
+  const roleEl = document.createElement("span");
+  roleEl.className = "role";
+  roleEl.textContent = "assistant";
+  div.appendChild(roleEl);
+  const timeline = document.createElement("div");
+  timeline.className = "tool-timeline";
+  div.appendChild(timeline);
+  const filesStripHost = document.createElement("div");
+  filesStripHost.className = "files-changed-host";
+  div.appendChild(filesStripHost);
+  const body = document.createElement("div");
+  body.className = "bubble-body";
+  body.innerHTML = "";
+  div.appendChild(body);
+  return { bubble: div, body, timeline, filesStripHost, fileChanges: [] };
+}
+
+function paintStreamingBody(body, text) {
+  body.innerHTML = formatMessageHtml(text || "");
+}
+
+function appendToolTimeline(timeline, event) {
+  if (!timeline) return;
+  if (event.type === "tool_start") {
+    const row = document.createElement("div");
+    row.className = "tool-card live";
+    row.dataset.toolId = event.id || "";
+    const path = pathFromToolInput(event.input);
+    row.innerHTML = `<span class="tool-name">${escapeHtml(event.name || "tool")}</span>`;
+    if (path) {
+      const p = document.createElement("span");
+      p.className = "tool-path";
+      p.textContent = path;
+      row.appendChild(p);
+    }
+    const st = document.createElement("span");
+    st.className = "tool-status";
+    st.textContent = "running…";
+    row.appendChild(st);
+    timeline.appendChild(row);
+  } else if (event.type === "tool_result") {
+    const row =
+      [...timeline.querySelectorAll(".tool-card")].find((el) => el.dataset.toolId === event.id) ||
+      null;
+    if (row) {
+      const st = row.querySelector(".tool-status");
+      if (st) st.textContent = event.is_error ? "error" : "done";
+      row.classList.toggle("is-error", !!event.is_error);
+    }
+  }
+}
+
+function updateStreamingFiles(host, fileChanges) {
+  if (!host) return;
+  host.innerHTML = "";
+  if (fileChanges.length) host.appendChild(createFilesChangedStrip(fileChanges));
+}
+
+function finalizeStreamingBubble(bubble, body, text, usage, extras = {}) {
+  bubble.classList.remove("streaming");
+  bubble.querySelectorAll(".tool-summary").forEach((el) => el.remove());
+  const blocks = extras.blocks || null;
+  const fileChanges = extras.file_changes || [];
+  const checkpointId = extras.checkpoint_id || null;
+
+  const panel = createBlocksPanel(blocks, { checkpointId });
+  const timeline = bubble.querySelector(".tool-timeline");
+  if (panel) {
+    if (timeline) timeline.replaceWith(panel);
+    else bubble.insertBefore(panel, body);
+  } else {
+    const { text: cleaned, tools } = extractTools(text);
+    if (tools.length) {
+      const summary = createToolSummary(tools);
+      if (timeline) timeline.replaceWith(summary);
+      else bubble.insertBefore(summary, body);
+    } else if (timeline && !timeline.childNodes.length) timeline.remove();
+  }
+
+  const host = bubble.querySelector(".files-changed-host");
+  if (fileChanges.length) {
+    const strip = createFilesChangedStrip(fileChanges, { checkpointId });
+    if (host) {
+      host.innerHTML = "";
+      host.appendChild(strip);
+    } else bubble.insertBefore(strip, body);
+  } else if (host) host.remove();
+
+  const cleanedText = extractTools(text).text;
+  if (cleanedText) {
+    body.innerHTML = formatMessageHtml(cleanedText);
+    renderMath(body);
+  } else if (body) {
+    body.remove();
+  }
+  bubble.querySelectorAll(".bubble-usage").forEach((el) => el.remove());
+  if (usage && usageTotal(usage) > 0) {
+    bubble.appendChild(createUsageBadge(usage));
+  }
+}
+
+function setStreamingUi(on) {
+  state.streaming = on;
+  const send = $("send-btn");
+  const stop = $("stop-btn");
+  if (send) {
+    send.hidden = !!on;
+    send.setAttribute("aria-hidden", on ? "true" : "false");
+  }
+  if (stop) {
+    stop.hidden = !on;
+    stop.setAttribute("aria-hidden", on ? "false" : "true");
+    if (on) {
+      stop.setAttribute("aria-label", "Stop generating");
+      stop.focus();
+    }
+  }
+  if (!on) setComposerEnabled(!!state.chatId);
+}
+
+function messagesNearBottom(root, threshold = 96) {
+  if (!root) return true;
+  return root.scrollHeight - root.scrollTop - root.clientHeight <= threshold;
+}
+
+function scrollMessages(root, { force = false } = {}) {
+  if (!root) return;
+  if (force || messagesNearBottom(root)) root.scrollTop = root.scrollHeight;
 }
 
 function setProviderUI(provider) {
@@ -792,6 +1147,7 @@ function updateEmptyStage() {
 }
 
 async function openChat(id, sourceHint, transcriptPath) {
+  if (state.streaming) stopStreaming();
   state.chatId = id;
   state.transcriptPath = transcriptPath || null;
   renderChatList();
@@ -816,6 +1172,7 @@ async function openChat(id, sourceHint, transcriptPath) {
     renderMessages(thread.messages || []);
     showChatView(true);
     updateEmptyStage();
+    loadWorkspaceFiles($("workspace-select").value || thread.workspace || null).catch(() => {});
     const note = $("sync-note");
     if (note) {
       note.hidden = false;
@@ -825,8 +1182,10 @@ async function openChat(id, sourceHint, transcriptPath) {
         note.textContent = "Claude Code session — first reply continues as a local copy.";
       } else if (state.chatSource === "chatgpt" || state.chatSource === "antigravity") {
         note.textContent = `Imported from ${sourceLabel(state.chatSource)} — continue here on Foundry or Bedrock.`;
+      } else if (thread.workspace) {
+        note.textContent = "Workspace linked — agent can read/edit files. Use @ to mention a path.";
       } else {
-        note.textContent = "Type / to invoke a skill.";
+        note.textContent = "Type / for skills · @ for files (link a workspace first).";
       }
     }
   } finally {
@@ -838,15 +1197,246 @@ function renderMessages(messages) {
   const root = $("messages");
   root.innerHTML = "";
   if (!messages.length) {
-    root.innerHTML = `<p class="empty">Start typing — use / to pick a skill.</p>`;
+    root.innerHTML = `<p class="empty">Start typing — use / for skills or @ for files.</p>`;
     return;
   }
   for (const m of messages) {
-    if (!m.text || !String(m.text).trim()) continue;
-    const bubble = createBubble(m.role, m.text);
+    const hasBlocks = m.blocks && m.blocks.length;
+    const hasChanges = m.file_changes && m.file_changes.length;
+    if ((!m.text || !String(m.text).trim()) && !hasBlocks && !hasChanges) continue;
+    const bubble = createBubble(m.role, m.text || "", m.usage || null, {
+      blocks: m.blocks || null,
+      file_changes: m.file_changes || null,
+      checkpoint_id: m.checkpoint_id || null,
+    });
     if (bubble) root.appendChild(bubble);
   }
   root.scrollTop = root.scrollHeight;
+}
+
+function stopStreaming() {
+  if (state.streamAbort) {
+    state.streamAbort.abort();
+    state.streamAbort = null;
+  }
+}
+
+async function sendMessage(event) {
+  event.preventDefault();
+  if (!state.chatId || state.streaming) return;
+  const input = $("message-input");
+  const text = input.value.trim();
+  if (!text) return;
+  hideSlashMenu();
+  hideMentionMenu();
+
+  const root = $("messages");
+  if (root.querySelector(".empty") || root.querySelector(".empty-stage")) root.innerHTML = "";
+  const userBubble = createBubble("user", text);
+  if (userBubble) root.appendChild(userBubble);
+  input.value = "";
+  scrollMessages(root, { force: true });
+
+  const streamUi = createStreamingBubble();
+  const { bubble: replyBubble, body: replyBody, timeline, filesStripHost } = streamUi;
+  const liveFileChanges = streamUi.fileChanges;
+  root.appendChild(replyBubble);
+  scrollMessages(root, { force: true });
+
+  const controller = new AbortController();
+  state.streamAbort = controller;
+  const streamChatId = state.chatId;
+  state.streamChatId = streamChatId;
+  setStreamingUi(true);
+  input.disabled = true;
+  const messagesEl = $("messages");
+  if (messagesEl) messagesEl.setAttribute("aria-busy", "true");
+
+  let assembled = "";
+  let paintTimer = null;
+  const schedulePaint = () => {
+    if (paintTimer) return;
+    paintTimer = window.setTimeout(() => {
+      paintTimer = null;
+      paintStreamingBody(replyBody, assembled);
+      scrollMessages(root);
+    }, 48);
+  };
+
+  let aborted = false;
+  try {
+    const resp = await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: state.chatId,
+        message: text,
+        writeback: $("writeback-toggle").checked,
+        source: state.chatSource,
+        workspace: $("workspace-select").value || null,
+        transcript_path: state.transcriptPath,
+      }),
+      signal: controller.signal,
+    });
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`;
+      try {
+        const err = await resp.json();
+        detail = err.detail || detail;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(detail);
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let donePayload = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop() || "";
+      for (const chunk of chunks) {
+        const line = chunk
+          .split("\n")
+          .map((l) => l.trim())
+          .find((l) => l.startsWith("data:"));
+        if (!line) continue;
+        let event;
+        try {
+          event = JSON.parse(line.slice(5).trim());
+        } catch {
+          continue;
+        }
+        if (event.type === "meta") {
+          if (event.forked && event.chat_id) {
+            state.chatId = event.chat_id;
+            state.chatSource = event.source || "local";
+            state.streamChatId = event.chat_id;
+            state.transcriptPath = null;
+            $("active-project").textContent = sourceLabel(state.chatSource);
+          }
+          if (event.agent === false) {
+            const note = $("sync-note");
+            if (note && !$("workspace-select")?.value) {
+              note.hidden = false;
+              note.textContent = "Link a workspace in Settings to enable file tools & diffs.";
+            }
+          }
+        } else if (event.type === "delta" && event.text) {
+          assembled += event.text;
+          schedulePaint();
+        } else if (event.type === "tool_start" || event.type === "tool_result") {
+          appendToolTimeline(timeline, event);
+          scrollMessages(root);
+        } else if (event.type === "file_change") {
+          liveFileChanges.push({
+            path: event.path,
+            op: event.op,
+            diff: event.diff || "",
+          });
+          updateStreamingFiles(filesStripHost, liveFileChanges);
+          scrollMessages(root);
+        } else if (event.type === "done") {
+          donePayload = event;
+        } else if (event.type === "error") {
+          throw new Error(event.detail || "Stream failed");
+        }
+      }
+    }
+
+    if (paintTimer) {
+      clearTimeout(paintTimer);
+      paintTimer = null;
+    }
+
+    const stillHere = state.chatId === state.streamChatId || state.chatId === streamChatId;
+    if (!stillHere) {
+      /* navigated away */
+    } else if (donePayload) {
+      const finalText = donePayload.reply || assembled;
+      finalizeStreamingBubble(replyBubble, replyBody, finalText, donePayload.usage || null, {
+        blocks: donePayload.blocks || null,
+        file_changes: donePayload.file_changes || liveFileChanges,
+        checkpoint_id: donePayload.checkpoint_id || null,
+      });
+      if (donePayload.usage) {
+        addSessionUsage(donePayload.usage);
+        state.usageChat = donePayload.usage_total || state.usageChat;
+        updateTokenMeter();
+      }
+      if (donePayload.skill) {
+        $("sync-note").hidden = false;
+        $("sync-note").textContent =
+          `Used skill /${donePayload.skill}` + (donePayload.writeback?.enabled ? " · wrote back to Cursor" : "");
+      } else if (donePayload.writeback?.enabled) {
+        $("sync-note").hidden = false;
+        $("sync-note").textContent = donePayload.writeback.note || "Wrote back into Cursor transcript.";
+      } else if (donePayload.forked) {
+        $("sync-note").hidden = false;
+        $("sync-note").textContent = "Continued as a local conversation (original transcript unchanged).";
+      }
+      scrollMessages(root);
+      await loadChats();
+    } else {
+      const partial = assembled.trim();
+      if (partial || liveFileChanges.length) {
+        finalizeStreamingBubble(replyBubble, replyBody, partial, null, {
+          file_changes: liveFileChanges,
+        });
+      } else {
+        replyBubble.remove();
+      }
+      const note = $("sync-note");
+      if (note) {
+        note.hidden = false;
+        note.textContent = "Connection ended before the reply finished.";
+      }
+      try {
+        await openChat(state.chatId, state.chatSource, state.transcriptPath);
+      } catch {
+        /* keep local paint */
+      }
+    }
+  } catch (err) {
+    if (paintTimer) {
+      clearTimeout(paintTimer);
+      paintTimer = null;
+    }
+    if (err.name === "AbortError") {
+      aborted = true;
+      const stillHere = state.chatId === state.streamChatId || state.chatId === streamChatId;
+      const partial = assembled.trim();
+      if (stillHere) {
+        if (partial || liveFileChanges.length) {
+          finalizeStreamingBubble(replyBubble, replyBody, partial, null, {
+            file_changes: liveFileChanges,
+          });
+        } else {
+          replyBubble.remove();
+        }
+        const note = $("sync-note");
+        if (note) {
+          note.hidden = false;
+          note.textContent = "Generation stopped.";
+        }
+      }
+    } else {
+      replyBubble.remove();
+      const fail = createBubble("error", String(err.message || err));
+      if (fail) root.appendChild(fail);
+    }
+  } finally {
+    state.streamAbort = null;
+    state.streamChatId = null;
+    setStreamingUi(false);
+    if (messagesEl) messagesEl.removeAttribute("aria-busy");
+    if (!aborted || state.chatId === streamChatId) input.focus();
+  }
 }
 
 function slashQuery(value) {
@@ -901,65 +1491,75 @@ function applySlash(name) {
   input.focus();
 }
 
-async function sendMessage(event) {
-  event.preventDefault();
-  if (!state.chatId) return;
-  const input = $("message-input");
-  const text = input.value.trim();
-  if (!text) return;
-  hideSlashMenu();
-
-  $("send-btn").disabled = true;
-  input.disabled = true;
-  const root = $("messages");
-  if (root.querySelector(".empty")) root.innerHTML = "";
-  const userBubble = createBubble("user", text);
-  if (userBubble) root.appendChild(userBubble);
-  input.value = "";
-  root.scrollTop = root.scrollHeight;
-
-  try {
-    const result = await api("/api/chat", {
-      method: "POST",
-      body: JSON.stringify({
-        chat_id: state.chatId,
-        message: text,
-        writeback: $("writeback-toggle").checked,
-        source: state.chatSource,
-        workspace: $("workspace-select").value || null,
-        transcript_path: state.transcriptPath,
-      }),
-    });
-    if (result.forked && result.chat_id) {
-      state.chatId = result.chat_id;
-      state.chatSource = result.source || "local";
-      state.transcriptPath = null;
-      $("active-project").textContent = sourceLabel(state.chatSource);
-    }
-    const replyBubble = createBubble("assistant", result.reply || "");
-    if (replyBubble) root.appendChild(replyBubble);
-    if (result.usage) {
-      addSessionUsage(result.usage);
-      state.usageChat = result.usage_total || state.usageChat;
-      updateTokenMeter();
-    }
-    if (result.skill) {
-      $("sync-note").textContent =
-        `Used skill /${result.skill}` + (result.writeback?.enabled ? " · wrote back to Cursor" : "");
-    } else if (result.writeback?.enabled) {
-      $("sync-note").textContent = result.writeback.note || "Wrote back into Cursor transcript.";
-    } else if (result.forked) {
-      $("sync-note").textContent = "Continued as a local conversation (original transcript unchanged).";
-    }
-    root.scrollTop = root.scrollHeight;
-    await loadChats();
-  } catch (err) {
-    const fail = createBubble("error", String(err.message || err));
-    if (fail) root.appendChild(fail);
-  } finally {
-    setComposerEnabled(true);
-    input.focus();
+async function loadWorkspaceFiles(workspacePath) {
+  if (!workspacePath) {
+    state.workspaceFiles = [];
+    return;
   }
+  try {
+    const data = await api(`/api/workspace/files?path=${encodeURIComponent(workspacePath)}`);
+    state.workspaceFiles = data.files || [];
+  } catch {
+    state.workspaceFiles = [];
+  }
+}
+
+function mentionQuery(value) {
+  const m = String(value || "").match(/(^|\s)@([^\s@]*)$/);
+  if (!m) return null;
+  return m[2] || "";
+}
+
+function hideMentionMenu() {
+  const menu = $("mention-menu");
+  if (!menu) return;
+  menu.hidden = true;
+  menu.innerHTML = "";
+}
+
+function showMentionMenu(query) {
+  const menu = $("mention-menu");
+  if (!menu) return;
+  const ws = $("workspace-select")?.value;
+  if (!ws) {
+    menu.hidden = false;
+    menu.innerHTML = `<div class="slash-empty">Link a workspace in Settings to @ mention files.</div>`;
+    return;
+  }
+  if (!(state.workspaceFiles || []).length) {
+    menu.hidden = false;
+    menu.innerHTML = `<div class="slash-empty">No indexed files yet — pick a workspace or wait for scan.</div>`;
+    return;
+  }
+  const q = String(query || "").toLowerCase();
+  const items = (state.workspaceFiles || [])
+    .filter((f) => !q || f.toLowerCase().includes(q))
+    .slice(0, 12);
+  if (!items.length) {
+    menu.hidden = false;
+    menu.innerHTML = `<div class="slash-empty">No files match “${escapeHtml(q)}”.</div>`;
+    return;
+  }
+  state.mentionIndex = Math.min(state.mentionIndex, items.length - 1);
+  menu.hidden = false;
+  menu.innerHTML = items
+    .map(
+      (f, i) => `
+      <button type="button" class="slash-item${i === state.mentionIndex ? " active" : ""}" data-path="${escapeHtml(f)}">
+        <strong>@${escapeHtml(f)}</strong>
+      </button>`
+    )
+    .join("");
+  menu.querySelectorAll(".slash-item").forEach((btn) => {
+    btn.addEventListener("click", () => applyMention(btn.dataset.path));
+  });
+}
+
+function applyMention(path) {
+  const input = $("message-input");
+  input.value = String(input.value || "").replace(/(^|\s)@[^\s@]*$/, `$1@${path} `);
+  hideMentionMenu();
+  input.focus();
 }
 
 document.querySelectorAll(".seg-btn").forEach((btn) => {
@@ -1009,6 +1609,30 @@ on("refresh-chats", "click", () =>
   loadChats().catch((err) => setConnectStatus(String(err.message || err), "err"))
 );
 on("composer", "submit", sendMessage);
+on("stop-btn", "click", stopStreaming);
+on("token-session", "click", (event) => {
+  const chip = event.currentTarget;
+  if (!chip || chip.hidden) return;
+  chip.classList.toggle("tip-open");
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (state.streaming) {
+    event.preventDefault();
+    stopStreaming();
+    return;
+  }
+  closeDiffDrawer();
+  const menu = $("slash-menu");
+  if (menu && !menu.hidden) hideSlashMenu();
+  const mentions = $("mention-menu");
+  if (mentions && !mentions.hidden) hideMentionMenu();
+});
+on("diff-close", "click", closeDiffDrawer);
+on("diff-backdrop", "click", closeDiffDrawer);
+on("workspace-select", "change", () => {
+  loadWorkspaceFiles($("workspace-select").value || null).catch(() => {});
+});
 on("mobile-back", "click", () => showChatView(false));
 on("import-btn", "click", () => $("import-file")?.click());
 on("import-chatgpt-card", "click", () => $("import-file")?.click());
@@ -1021,15 +1645,52 @@ on("import-file", "change", (event) => {
 });
 
 on("message-input", "input", () => {
-  const q = slashQuery($("message-input").value);
-  if (q === null) hideSlashMenu();
-  else {
+  const value = $("message-input").value;
+  const q = slashQuery(value);
+  const mq = mentionQuery(value);
+  if (q !== null) {
+    hideMentionMenu();
     state.slashIndex = 0;
     showSlashMenu(q);
+  } else if (mq !== null) {
+    hideSlashMenu();
+    state.mentionIndex = 0;
+    showMentionMenu(mq);
+  } else {
+    hideSlashMenu();
+    hideMentionMenu();
   }
 });
 
 on("message-input", "keydown", (event) => {
+  const mentionMenu = $("mention-menu");
+  const mentionOpen = mentionMenu && !mentionMenu.hidden;
+  if (mentionOpen) {
+    const items = [...mentionMenu.querySelectorAll(".slash-item")];
+    if (items.length) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        state.mentionIndex = (state.mentionIndex + 1) % items.length;
+        showMentionMenu(mentionQuery($("message-input").value) || "");
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        state.mentionIndex = (state.mentionIndex - 1 + items.length) % items.length;
+        showMentionMenu(mentionQuery($("message-input").value) || "");
+        return;
+      }
+      if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
+        event.preventDefault();
+        applyMention(items[state.mentionIndex].dataset.path);
+        return;
+      }
+      if (event.key === "Escape") {
+        hideMentionMenu();
+        return;
+      }
+    }
+  }
   const menu = $("slash-menu");
   if (!menu) return;
   const open = !menu.hidden;
@@ -1073,6 +1734,7 @@ window.addEventListener("resize", () => {
 (async function init() {
   const saved = storedTheme();
   applyTheme(saved || currentTheme(), { persist: false });
+  setStreamingUi(false);
   setComposerEnabled(false);
   showChatView(false);
   updateTokenMeter();

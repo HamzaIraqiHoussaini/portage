@@ -10,6 +10,46 @@ from typing import Any
 
 from .config import Settings, get_settings
 
+def _infer_file_changes(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Best-effort file_change cards from tool_use inputs in imported transcripts."""
+    out: list[dict[str, Any]] = []
+    for b in blocks:
+        if b.get("type") != "tool_use":
+            continue
+        name = str(b.get("name") or "").lower()
+        inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+        path = inp.get("path") or inp.get("file_path") or inp.get("target_file")
+        if not path:
+            continue
+        diff = ""
+        op = "update"
+        if "apply_patch" in name or name in ("write", "write_file", "search_replace", "strreplace"):
+            content = inp.get("content") or inp.get("new_string") or inp.get("new_str")
+            old = inp.get("old_string") or inp.get("old_str") or ""
+            if isinstance(content, str) and content and isinstance(old, str):
+                from .agent_tools import unified_diff
+
+                diff = unified_diff(str(path), old, content if "new" in str(inp.keys()) or name == "write" else content)
+                if name.startswith("write") and not old:
+                    op = "create"
+            elif isinstance(content, str):
+                diff = f"--- a/{path}\n+++ b/{path}\n@@\n" + "\n".join(
+                    f"+{line}" for line in content.splitlines()[:80]
+                )
+                op = "create"
+        if path:
+            out.append(
+                {
+                    "type": "file_change",
+                    "path": str(path),
+                    "op": op,
+                    "diff": diff,
+                    "tool": b.get("name"),
+                }
+            )
+    return out
+
+
 TAG_RE = re.compile(r"</?(?:user_query|timestamp|think)[^>]*>", re.IGNORECASE)
 USER_QUERY_RE = re.compile(
     r"<user_query>\s*([\s\S]*?)\s*</user_query>", re.IGNORECASE
@@ -24,6 +64,7 @@ class ChatMessage:
     role: str
     text: str
     raw: dict[str, Any] | None = None
+    blocks: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -54,12 +95,84 @@ class ChatThread:
     messages: list[ChatMessage] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        msgs = []
+        for m in self.messages:
+            if m.role not in ("user", "assistant"):
+                continue
+            item: dict[str, Any] = {"role": m.role, "text": m.text}
+            if m.blocks:
+                item["blocks"] = m.blocks
+            msgs.append(item)
         return {
             **self.summary.to_dict(),
-            "messages": [
-                {"role": m.role, "text": m.text} for m in self.messages if m.role in ("user", "assistant")
-            ],
+            "messages": msgs,
         }
+
+
+def _extract_blocks(content: Any) -> list[dict[str, Any]]:
+    """Structured content blocks for rich UI (tool cards, thinking, text)."""
+    if content is None:
+        return []
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content.strip() else []
+    if isinstance(content, list):
+        blocks: list[dict[str, Any]] = []
+        for block in content:
+            if isinstance(block, str):
+                if block.strip():
+                    blocks.append({"type": "text", "text": block})
+                continue
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                text = str(block.get("text") or "")
+                if text.strip():
+                    blocks.append({"type": "text", "text": text})
+            elif btype == "tool_use":
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": block.get("id"),
+                        "name": block.get("name") or "tool",
+                        "input": block.get("input") or {},
+                    }
+                )
+            elif btype == "tool_result":
+                content_val = block.get("content")
+                if isinstance(content_val, list):
+                    bits = []
+                    for c in content_val:
+                        if isinstance(c, dict) and c.get("text"):
+                            bits.append(str(c["text"]))
+                        elif isinstance(c, str):
+                            bits.append(c)
+                    content_val = "\n".join(bits)
+                blocks.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.get("tool_use_id") or block.get("toolUseId"),
+                        "content": str(content_val or "")[:8000],
+                        "is_error": bool(block.get("is_error")),
+                    }
+                )
+            elif btype in ("thinking", "reasoning"):
+                think = str(block.get("thinking") or block.get("text") or "")
+                if think.strip():
+                    blocks.append({"type": "thinking", "text": think})
+            elif btype == "file_change" or block.get("path") and block.get("diff"):
+                blocks.append(
+                    {
+                        "type": "file_change",
+                        "path": block.get("path"),
+                        "op": block.get("op") or "update",
+                        "diff": block.get("diff") or "",
+                    }
+                )
+        return blocks
+    if isinstance(content, dict):
+        return _extract_blocks([content])
+    return [{"type": "text", "text": str(content)}]
 
 
 def _extract_text(content: Any) -> str:
@@ -231,17 +344,25 @@ def read_transcript_messages(path: Path | str, limit_tail: int | None = None) ->
             if role not in ("user", "assistant", "system"):
                 continue
             msg = obj.get("message") or {}
-            text = _extract_text(msg.get("content"))
+            raw_content = msg.get("content")
+            blocks = _extract_blocks(raw_content)
+            text = _extract_text(raw_content)
             if role == "user":
                 text = _clean_user_text(text)
+                # clean blocks text too for user_query
+                for b in blocks:
+                    if b.get("type") == "text":
+                        b["text"] = _clean_user_text(str(b.get("text") or ""))
             if not text.strip() and role == "assistant":
-                # skip empty / tool-only sometimes — keep a marker if only tools
-                raw_content = msg.get("content")
                 if isinstance(raw_content, list) and any(
                     isinstance(b, dict) and b.get("type") == "tool_use" for b in raw_content
                 ):
                     text = _extract_text(raw_content)
-            messages.append(ChatMessage(role=role, text=text, raw=obj))
+            # Recover simple file_changes from Write/StrReplace-like tool inputs
+            file_changes = _infer_file_changes(blocks)
+            if file_changes:
+                blocks = list(blocks) + file_changes
+            messages.append(ChatMessage(role=role, text=text, raw=obj, blocks=blocks or None))
 
     if limit_tail is not None and len(messages) > limit_tail:
         return messages[-limit_tail:]

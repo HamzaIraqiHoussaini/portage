@@ -155,6 +155,170 @@ async def _foundry_chat(
     }
 
 
+async def _foundry_chat_stream(
+    messages: list[dict[str, str]],
+    *,
+    system: str,
+    settings: Settings,
+    max_tokens: int | None = None,
+):
+    """Yield dict events: delta {text}, then done {text, usage, model, provider}."""
+    from .security import normalize_usage, sanitize_provider_error, validate_foundry_url
+
+    if not settings.foundry_api_key:
+        raise ProviderError("Foundry API key is empty.")
+    if "YOUR-RESOURCE" in settings.foundry_messages_url:
+        raise ProviderError("Foundry messages URL still has a placeholder.")
+    try:
+        url = validate_foundry_url(settings.foundry_messages_url)
+    except ValueError as e:
+        raise ProviderError(str(e)) from e
+
+    payload: dict[str, Any] = {
+        "model": settings.foundry_model,
+        "max_tokens": max_tokens or settings.foundry_max_tokens,
+        "system": system,
+        "messages": messages,
+        "stream": True,
+    }
+    parts: list[str] = []
+    usage_acc: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+    headers = {**_foundry_headers(settings), "Accept": "text/event-stream"}
+    async with httpx.AsyncClient(timeout=300.0, follow_redirects=False) as client:
+        async with client.stream("POST", url, headers=headers, json=payload) as resp:
+            if resp.status_code >= 400:
+                body = (await resp.aread()).decode("utf-8", errors="replace")
+                raise ProviderError(sanitize_provider_error(resp.status_code, body))
+            event_name = ""
+            async for line in resp.aiter_lines():
+                if not line:
+                    event_name = ""
+                    continue
+                if line.startswith("event:"):
+                    event_name = line[6:].strip()
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
+                if not raw or raw == "[DONE]":
+                    event_name = ""
+                    continue
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    event_name = ""
+                    continue
+                dtype = data.get("type") or event_name
+                event_name = ""
+                if dtype == "content_block_delta":
+                    delta = data.get("delta") or {}
+                    text = delta.get("text") if isinstance(delta, dict) else None
+                    if text:
+                        parts.append(str(text))
+                        yield {"type": "delta", "text": str(text)}
+                elif dtype == "message_start":
+                    msg = data.get("message") if isinstance(data.get("message"), dict) else {}
+                    u = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
+                    if u:
+                        usage_acc = normalize_usage(u, provider="foundry")
+                elif dtype == "message_delta":
+                    u = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+                    if u:
+                        partial = normalize_usage(u, provider="foundry")
+                        merged = dict(usage_acc)
+                        for key in ("input_tokens", "output_tokens", "total_tokens"):
+                            if partial.get(key):
+                                merged[key] = partial[key]
+                        if not merged.get("total_tokens"):
+                            merged["total_tokens"] = merged.get("input_tokens", 0) + merged.get(
+                                "output_tokens", 0
+                            )
+                        usage_acc = merged
+
+    text = "".join(parts).strip()
+    if not usage_acc.get("total_tokens"):
+        usage_acc["total_tokens"] = usage_acc.get("input_tokens", 0) + usage_acc.get(
+            "output_tokens", 0
+        )
+    yield {
+        "type": "done",
+        "text": text,
+        "usage": usage_acc,
+        "model": settings.foundry_model,
+        "provider": "foundry",
+    }
+
+
+def _aws_chat_stream_sync(
+    messages: list[dict[str, str]],
+    *,
+    system: str,
+    settings: Settings,
+    max_tokens: int | None = None,
+    cancel_event=None,
+):
+    from .security import normalize_usage
+
+    if not settings.aws_access_key_id or not settings.aws_secret_access_key:
+        raise ProviderError("AWS access key and secret are required.")
+    if not settings.aws_model_id:
+        raise ProviderError("AWS model id is empty.")
+
+    client = _aws_client(settings)
+    kwargs: dict[str, Any] = {
+        "modelId": settings.aws_model_id,
+        "messages": _aws_messages(messages),
+        "inferenceConfig": {"maxTokens": max_tokens or settings.foundry_max_tokens},
+    }
+    if system.strip():
+        kwargs["system"] = [{"text": system}]
+
+    try:
+        response = client.converse_stream(**kwargs)
+    except Exception as e:  # noqa: BLE001
+        raise ProviderError(f"AWS Bedrock error: {e}") from e
+
+    parts: list[str] = []
+    usage_acc: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    stream = response.get("stream")
+    if stream is None:
+        raise ProviderError("AWS Bedrock returned no stream.")
+    try:
+        for event in stream:
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            if "contentBlockDelta" in event:
+                delta = event["contentBlockDelta"].get("delta") or {}
+                text = delta.get("text")
+                if text:
+                    parts.append(str(text))
+                    yield {"type": "delta", "text": str(text)}
+            elif "metadata" in event:
+                u = event["metadata"].get("usage") if isinstance(event["metadata"], dict) else None
+                if isinstance(u, dict):
+                    usage_acc = normalize_usage(u, provider="aws")
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    if cancel_event is not None and cancel_event.is_set():
+        return
+
+    text = "".join(parts).strip()
+    yield {
+        "type": "done",
+        "text": text,
+        "usage": usage_acc,
+        "model": settings.aws_model_id,
+        "provider": "aws",
+    }
+
+
 def _aws_client(settings: Settings):
     try:
         import boto3
@@ -238,6 +402,245 @@ async def chat_completion(
             _aws_chat_sync, messages, system=system, settings=s, max_tokens=max_tokens
         )
     return await _foundry_chat(messages, system=system, settings=s, max_tokens=max_tokens)
+
+
+async def chat_completion_with_tools(
+    messages: list[dict[str, Any]],
+    *,
+    system: str,
+    settings: Settings | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    max_tokens: int | None = None,
+) -> dict[str, Any]:
+    """One model step that may return tool_use content blocks (Anthropic-shaped)."""
+    s = settings or get_settings()
+    tool_defs = tools or []
+    if s.provider == "aws":
+        import asyncio
+
+        return await asyncio.to_thread(
+            _aws_chat_with_tools_sync,
+            messages,
+            system=system,
+            settings=s,
+            tools=tool_defs,
+            max_tokens=max_tokens,
+        )
+    return await _foundry_chat_with_tools(
+        messages, system=system, settings=s, tools=tool_defs, max_tokens=max_tokens
+    )
+
+
+async def _foundry_chat_with_tools(
+    messages: list[dict[str, Any]],
+    *,
+    system: str,
+    settings: Settings,
+    tools: list[dict[str, Any]],
+    max_tokens: int | None = None,
+) -> dict[str, Any]:
+    from .security import normalize_usage, sanitize_provider_error, validate_foundry_url
+
+    if not settings.foundry_api_key:
+        raise ProviderError("Foundry API key is empty.")
+    try:
+        url = validate_foundry_url(settings.foundry_messages_url)
+    except ValueError as e:
+        raise ProviderError(str(e)) from e
+
+    payload: dict[str, Any] = {
+        "model": settings.foundry_model,
+        "max_tokens": max_tokens or settings.foundry_max_tokens,
+        "system": system,
+        "messages": messages,
+    }
+    if tools:
+        payload["tools"] = tools
+    async with httpx.AsyncClient(timeout=300.0, follow_redirects=False) as client:
+        resp = await client.post(url, headers=_foundry_headers(settings), json=payload)
+    if resp.status_code >= 400:
+        raise ProviderError(sanitize_provider_error(resp.status_code, resp.text))
+    data = resp.json()
+    content = data.get("content") if isinstance(data.get("content"), list) else []
+    return {
+        "text": _response_text_anthropic(data),
+        "content": content,
+        "stop_reason": data.get("stop_reason"),
+        "raw": data,
+        "model": settings.foundry_model,
+        "provider": "foundry",
+        "usage": normalize_usage(
+            data.get("usage") if isinstance(data.get("usage"), dict) else {},
+            provider="foundry",
+        ),
+    }
+
+
+def _aws_normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert Anthropic-ish messages (string or block list) to Bedrock converse shape."""
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = m.get("content")
+        blocks: list[dict[str, Any]] = []
+        if isinstance(content, str):
+            blocks.append({"text": content})
+        elif isinstance(content, list):
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                btype = b.get("type")
+                if btype == "text" or "text" in b and btype is None:
+                    blocks.append({"text": str(b.get("text") or "")})
+                elif btype == "tool_use":
+                    blocks.append(
+                        {
+                            "toolUse": {
+                                "toolUseId": b.get("id") or b.get("toolUseId") or "tool",
+                                "name": b.get("name") or "tool",
+                                "input": b.get("input") or {},
+                            }
+                        }
+                    )
+                elif btype == "tool_result":
+                    blocks.append(
+                        {
+                            "toolResult": {
+                                "toolUseId": b.get("tool_use_id") or b.get("toolUseId") or "tool",
+                                "content": [{"text": str(b.get("content") or "")}],
+                                "status": "error" if b.get("is_error") else "success",
+                            }
+                        }
+                    )
+                elif "toolUse" in b or "toolResult" in b or "text" in b:
+                    blocks.append(b)
+        if blocks:
+            out.append({"role": role, "content": blocks})
+    return out
+
+
+def _aws_chat_with_tools_sync(
+    messages: list[dict[str, Any]],
+    *,
+    system: str,
+    settings: Settings,
+    tools: list[dict[str, Any]],
+    max_tokens: int | None = None,
+) -> dict[str, Any]:
+    from .security import normalize_usage
+    from . import agent_tools
+
+    if not settings.aws_access_key_id or not settings.aws_secret_access_key:
+        raise ProviderError("AWS access key and secret are required.")
+    if not settings.aws_model_id:
+        raise ProviderError("AWS model id is empty.")
+
+    client = _aws_client(settings)
+    kwargs: dict[str, Any] = {
+        "modelId": settings.aws_model_id,
+        "messages": _aws_normalize_messages(messages),
+        "inferenceConfig": {"maxTokens": max_tokens or settings.foundry_max_tokens},
+    }
+    if system.strip():
+        kwargs["system"] = [{"text": system}]
+    if tools:
+        kwargs["toolConfig"] = agent_tools.bedrock_tool_config()
+
+    try:
+        data = client.converse(**kwargs)
+    except Exception as e:  # noqa: BLE001
+        raise ProviderError(f"AWS Bedrock error: {e}") from e
+
+    msg = (data.get("output") or {}).get("message") or {}
+    raw_blocks = msg.get("content") or []
+    content: list[dict[str, Any]] = []
+    text_parts: list[str] = []
+    for block in raw_blocks:
+        if not isinstance(block, dict):
+            continue
+        if "text" in block:
+            t = str(block.get("text") or "")
+            text_parts.append(t)
+            content.append({"type": "text", "text": t})
+        elif "toolUse" in block:
+            tu = block["toolUse"] or {}
+            content.append(
+                {
+                    "type": "tool_use",
+                    "id": tu.get("toolUseId"),
+                    "name": tu.get("name"),
+                    "input": tu.get("input") or {},
+                }
+            )
+    stop = data.get("stopReason")
+    mapped_stop = "tool_use" if stop == "tool_use" else "end_turn"
+    usage_raw = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    return {
+        "text": "\n".join(text_parts).strip(),
+        "content": content,
+        "stop_reason": mapped_stop,
+        "raw": data,
+        "model": settings.aws_model_id,
+        "provider": "aws",
+        "usage": normalize_usage(usage_raw, provider="aws"),
+    }
+
+
+async def stream_chat_completion(
+    messages: list[dict[str, str]],
+    *,
+    system: str,
+    settings: Settings | None = None,
+    max_tokens: int | None = None,
+):
+    """Async generator of stream events (delta / done)."""
+    s = settings or get_settings()
+    if s.provider == "aws":
+        import asyncio
+        import threading
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        sentinel = object()
+        cancel_event = threading.Event()
+
+        def _run() -> None:
+            try:
+                for event in _aws_chat_stream_sync(
+                    messages,
+                    system=system,
+                    settings=s,
+                    max_tokens=max_tokens,
+                    cancel_event=cancel_event,
+                ):
+                    if cancel_event.is_set():
+                        break
+                    loop.call_soon_threadsafe(queue.put_nowait, event)
+            except Exception as exc:  # noqa: BLE001
+                if not cancel_event.is_set():
+                    loop.call_soon_threadsafe(queue.put_nowait, exc)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, sentinel)
+
+        threading.Thread(target=_run, daemon=True).start()
+        try:
+            while True:
+                item = await queue.get()
+                if item is sentinel:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+        finally:
+            cancel_event.set()
+        return
+
+    async for event in _foundry_chat_stream(
+        messages, system=system, settings=s, max_tokens=max_tokens
+    ):
+        yield event
 
 
 async def test_connection(settings: Settings | None = None) -> dict[str, Any]:

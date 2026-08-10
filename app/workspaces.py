@@ -22,6 +22,10 @@ SAFE_CHAT_ID_RE = re.compile(
 class LocalMessage:
     role: str
     text: str
+    usage: dict[str, int] | None = None
+    blocks: list[dict[str, Any]] | None = None
+    file_changes: list[dict[str, Any]] | None = None
+    checkpoint_id: str | None = None
 
 
 @dataclass
@@ -56,9 +60,21 @@ class LocalChat:
         }
 
     def to_dict(self) -> dict[str, Any]:
+        msgs: list[dict[str, Any]] = []
+        for m in self.messages:
+            item: dict[str, Any] = {"role": m.role, "text": m.text}
+            if m.usage:
+                item["usage"] = dict(m.usage)
+            if m.blocks:
+                item["blocks"] = list(m.blocks)
+            if m.file_changes:
+                item["file_changes"] = list(m.file_changes)
+            if m.checkpoint_id:
+                item["checkpoint_id"] = m.checkpoint_id
+            msgs.append(item)
         return {
             **self.to_summary(),
-            "messages": [{"role": m.role, "text": m.text} for m in self.messages],
+            "messages": msgs,
         }
 
 
@@ -233,26 +249,41 @@ def append_local_exchange(
     assistant_text: str,
     settings: Settings | None = None,
     usage: dict[str, int] | None = None,
+    blocks: list[dict[str, Any]] | None = None,
+    file_changes: list[dict[str, Any]] | None = None,
+    checkpoint_id: str | None = None,
 ) -> LocalChat:
     s = settings or get_settings()
     chat = load_local_chat(chat_id, s)
     if not chat:
         raise FileNotFoundError(f"Local chat not found: {chat_id}")
     chat.messages.append(LocalMessage(role="user", text=user_text))
-    chat.messages.append(LocalMessage(role="assistant", text=assistant_text))
-    chat.updated_at = int(time.time() * 1000)
-    if chat.title in ("New conversation", chat.id) and user_text.strip():
-        line = user_text.strip().splitlines()[0]
-        chat.title = (line[:80] + ("…" if len(line) > 80 else ""))
+    assistant_usage = None
     if usage:
-        chat.usage_last = {
+        assistant_usage = {
             "input_tokens": int(usage.get("input_tokens") or 0),
             "output_tokens": int(usage.get("output_tokens") or 0),
             "total_tokens": int(usage.get("total_tokens") or 0),
         }
+    chat.messages.append(
+        LocalMessage(
+            role="assistant",
+            text=assistant_text,
+            usage=assistant_usage,
+            blocks=list(blocks) if blocks else None,
+            file_changes=list(file_changes) if file_changes else None,
+            checkpoint_id=checkpoint_id,
+        )
+    )
+    chat.updated_at = int(time.time() * 1000)
+    if chat.title in ("New conversation", chat.id) and user_text.strip():
+        line = user_text.strip().splitlines()[0]
+        chat.title = (line[:80] + ("…" if len(line) > 80 else ""))
+    if assistant_usage:
+        chat.usage_last = dict(assistant_usage)
         total = dict(chat.usage_total or {})
         for key in ("input_tokens", "output_tokens", "total_tokens"):
-            total[key] = int(total.get(key) or 0) + int(chat.usage_last.get(key) or 0)
+            total[key] = int(total.get(key) or 0) + int(assistant_usage.get(key) or 0)
         chat.usage_total = total
     _save(chat, s)
     return chat
@@ -288,11 +319,29 @@ def workspace_context_block(workspace: str | None, max_files: int = 40) -> str:
 
 
 def _from_dict(data: dict[str, Any]) -> LocalChat:
-    msgs = [
-        LocalMessage(role=str(m.get("role")), text=str(m.get("text") or ""))
-        for m in (data.get("messages") or [])
-        if m.get("role") in ("user", "assistant", "system")
-    ]
+    msgs: list[LocalMessage] = []
+    for m in data.get("messages") or []:
+        if m.get("role") not in ("user", "assistant", "system"):
+            continue
+        usage_raw = m.get("usage") if isinstance(m.get("usage"), dict) else None
+        usage = None
+        if usage_raw:
+            usage = {
+                k: int(usage_raw.get(k) or 0)
+                for k in ("input_tokens", "output_tokens", "total_tokens")
+            }
+        msgs.append(
+            LocalMessage(
+                role=str(m.get("role")),
+                text=str(m.get("text") or ""),
+                usage=usage,
+                blocks=list(m["blocks"]) if isinstance(m.get("blocks"), list) else None,
+                file_changes=list(m["file_changes"])
+                if isinstance(m.get("file_changes"), list)
+                else None,
+                checkpoint_id=str(m["checkpoint_id"]) if m.get("checkpoint_id") else None,
+            )
+        )
     usage_last = data.get("usage_last") if isinstance(data.get("usage_last"), dict) else {}
     usage_total = data.get("usage_total") if isinstance(data.get("usage_total"), dict) else {}
     return LocalChat(
@@ -310,6 +359,18 @@ def _from_dict(data: dict[str, Any]) -> LocalChat:
 
 def _save(chat: LocalChat, settings: Settings) -> None:
     path = _chat_path(chat.id, settings)
+    messages: list[dict[str, Any]] = []
+    for m in chat.messages:
+        item: dict[str, Any] = {"role": m.role, "text": m.text}
+        if m.usage:
+            item["usage"] = dict(m.usage)
+        if m.blocks:
+            item["blocks"] = list(m.blocks)
+        if m.file_changes:
+            item["file_changes"] = list(m.file_changes)
+        if m.checkpoint_id:
+            item["checkpoint_id"] = m.checkpoint_id
+        messages.append(item)
     payload = {
         "id": chat.id,
         "title": chat.title,
@@ -317,7 +378,7 @@ def _save(chat: LocalChat, settings: Settings) -> None:
         "updated_at": chat.updated_at,
         "workspace": chat.workspace,
         "source": chat.source,
-        "messages": [{"role": m.role, "text": m.text} for m in chat.messages],
+        "messages": messages,
         "usage_last": dict(chat.usage_last or {}),
         "usage_total": dict(chat.usage_total or {}),
     }

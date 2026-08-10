@@ -435,10 +435,26 @@ def fork_thread_to_local(
     *,
     settings: Settings | None = None,
 ) -> LocalChat:
-    msgs = [{"role": m.role, "text": m.text} for m in thread.messages if m.role in ("user", "assistant")]
-    return materialize_as_local(
-        title=thread.summary.title,
-        messages=msgs,
-        source=thread.summary.source or "import",
-        settings=settings,
-    )
+    s = settings or get_settings()
+    chat = create_local_chat(title=thread.summary.title, settings=s)
+    chat.source = thread.summary.source or "import"
+    chat.messages = []
+    for m in thread.messages:
+        if m.role not in ("user", "assistant"):
+            continue
+        file_changes = [
+            b
+            for b in (m.blocks or [])
+            if isinstance(b, dict) and b.get("type") == "file_change"
+        ]
+        chat.messages.append(
+            LocalMessage(
+                role=m.role,
+                text=m.text,
+                blocks=list(m.blocks) if m.blocks else None,
+                file_changes=file_changes or None,
+            )
+        )
+    chat.updated_at = int(time.time() * 1000)
+    _save(chat, s)
+    return chat

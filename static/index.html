@@ -22,7 +22,7 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260810f" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260810s" />
   </head>
   <body>
     <div class="atmosphere" aria-hidden="true">
@@ -145,18 +145,11 @@
                 <path d="M19.4 13a7.7 7.7 0 0 0 .1-2l2-1.2-2-3.4-2.3.6a7.6 7.6 0 0 0-1.7-1L15 4h-4l-.5 2a7.6 7.6 0 0 0-1.7 1l-2.3-.6-2 3.4 2 1.2a7.7 7.7 0 0 0 0 2l-2 1.2 2 3.4 2.3-.6a7.6 7.6 0 0 0 1.7 1l.5 2h4l.5-2a7.6 7.6 0 0 0 1.7-1l2.3.6 2-3.4-2-1.2Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
               </svg>
             </button>
-            <div class="token-meter" id="token-meter" aria-live="polite" title="Tokens: input → output · total" hidden>
-              <div class="token-cell">
-                <span class="token-label">Last reply</span>
-                <span class="token-value" id="token-last">—</span>
-              </div>
-              <div class="token-cell">
+            <div class="token-meter" id="token-meter" aria-live="polite" hidden>
+              <div class="token-cell" id="token-chat-cell" tabindex="0">
                 <span class="token-label">This chat</span>
                 <span class="token-value" id="token-chat">—</span>
-              </div>
-              <div class="token-cell">
-                <span class="token-label">Session in→out</span>
-                <span class="token-value" id="token-session">0 → 0 · 0</span>
+                <span class="token-tip" id="token-chat-tip"></span>
               </div>
             </div>
           </div>
@@ -174,22 +167,46 @@
           </div>
         </div>
 
+        <aside class="diff-drawer" id="diff-drawer" hidden>
+          <div class="diff-drawer-head">
+            <h2>Files changed</h2>
+            <button type="button" class="ghost tiny" id="diff-close" aria-label="Close diff">×</button>
+          </div>
+          <ul class="diff-file-list" id="diff-file-list"></ul>
+          <pre class="diff-view" id="diff-view"></pre>
+        </aside>
+        <div class="diff-backdrop" id="diff-backdrop" hidden></div>
+
         <form id="composer" class="composer">
-          <label class="composer-hint" id="composer-hint" for="message-input">Select a chat or start a new one</label>
+          <div class="composer-meta">
+            <label class="composer-hint" id="composer-hint" for="message-input">Select a chat or start a new one</label>
+            <span class="session-chip" id="token-session" title="Session tokens" tabindex="0" hidden>
+              <span class="session-label">Session</span>
+              <span class="session-value" id="token-session-value">0</span>
+              <span class="token-tip" id="token-session-tip" aria-hidden="true"></span>
+            </span>
+          </div>
           <div class="composer-shell">
             <div class="composer-input-wrap">
               <div id="slash-menu" class="slash-menu" hidden></div>
+              <div id="mention-menu" class="slash-menu mention-menu" hidden></div>
               <textarea
                 id="message-input"
                 rows="2"
-                placeholder="Message… or /skill-name"
+                placeholder="Message… /skill or @file"
                 disabled
               ></textarea>
             </div>
-            <button id="send-btn" type="submit" class="send-island" disabled>
-              <span>Send</span>
-              <span class="send-glyph" aria-hidden="true">↑</span>
-            </button>
+            <div class="composer-actions">
+              <button id="send-btn" type="submit" class="send-island" disabled>
+                <span id="send-label">Send</span>
+                <span class="send-glyph" aria-hidden="true">↑</span>
+              </button>
+              <button id="stop-btn" type="button" class="stop-island" aria-label="Stop generating" hidden>
+                <span>Stop</span>
+                <span class="stop-glyph" aria-hidden="true">■</span>
+              </button>
+            </div>
           </div>
         </form>
       </main>

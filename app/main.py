@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import chats, importers, providers, skills, workspaces, writeback
+from . import agent_loop, agent_tools, chats, checkpoints, importers, providers, skills, workspaces, writeback
 from .config import ROOT, get_settings
 from .security import (
     MAX_HISTORY_MESSAGES,
@@ -237,6 +238,48 @@ async def get_workspaces():
     return {"workspaces": workspaces.list_workspaces(_settings())}
 
 
+class RestoreBody(BaseModel):
+    chat_id: str
+    checkpoint_id: str
+
+
+@app.get("/api/workspace/files")
+async def workspace_files(path: str | None = None):
+    s = _settings()
+    try:
+        ws = workspaces.resolve_allowed_workspace(path, settings=s)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not ws:
+        return {"files": [], "workspace": None}
+    return {"workspace": ws, "files": agent_tools.index_workspace_files(ws)}
+
+
+@app.get("/api/chats/{chat_id}/checkpoints")
+async def chat_checkpoints(chat_id: str):
+    try:
+        workspaces.validate_chat_id(chat_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"checkpoints": checkpoints.list_checkpoints(chat_id, _settings())}
+
+
+@app.post("/api/checkpoints/restore")
+async def restore_checkpoint(body: RestoreBody):
+    try:
+        workspaces.validate_chat_id(body.chat_id)
+        result = checkpoints.restore_checkpoint(
+            body.checkpoint_id, chat_id=body.chat_id, settings=_settings()
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return result
+
+
 @app.post("/api/workspaces")
 async def post_workspace(body: WorkspaceBody):
     try:
@@ -361,6 +404,126 @@ async def get_chat(chat_id: str, path: str | None = None):
 
 @app.post("/api/chat")
 async def send_chat(body: ChatBody):
+    ctx = _prepare_chat(body)
+    try:
+        result = await providers.chat_completion(
+            ctx["merged"], system=ctx["system"], settings=ctx["settings"]
+        )
+    except providers.ProviderError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+    return _finalize_chat(ctx, result["text"], result.get("usage") or {}, result)
+
+
+@app.post("/api/chat/stream")
+async def send_chat_stream(body: ChatBody, request: Request):
+    ctx = _prepare_chat(body)
+    disconnected = {"v": False}
+
+    async def event_gen():
+        yield _sse(
+            {
+                "type": "meta",
+                "chat_id": ctx["chat_id"],
+                "source": ctx["source"],
+                "forked": ctx["forked"],
+                "skill": ctx["skill_name"],
+                "agent": bool(ctx.get("workspace")),
+            }
+        )
+        full_parts: list[str] = []
+        file_changes: list[dict[str, Any]] = []
+        blocks: list[dict[str, Any]] = []
+        checkpoint_id: str | None = None
+        finalized = False
+        aborted = False
+        try:
+            async for event in agent_loop.run_agent_stream(
+                ctx["merged"],
+                system=ctx["system"],
+                settings=ctx["settings"],
+                workspace=ctx.get("workspace"),
+                chat_id=ctx["chat_id"] if ctx.get("source") == "local" else None,
+                cancel_check=lambda: disconnected["v"],
+            ):
+                if await request.is_disconnected():
+                    disconnected["v"] = True
+                    aborted = True
+                    break
+                etype = event.get("type")
+                if etype == "delta":
+                    text = str(event.get("text") or "")
+                    if text:
+                        full_parts.append(text)
+                        yield _sse({"type": "delta", "text": text})
+                elif etype in ("tool_start", "tool_result", "file_change", "checkpoint"):
+                    if etype == "checkpoint" and event.get("checkpoint_id"):
+                        checkpoint_id = str(event.get("checkpoint_id"))
+                    if etype == "file_change":
+                        file_changes.append(
+                            {
+                                "path": event.get("path"),
+                                "op": event.get("op"),
+                                "diff": event.get("diff") or "",
+                            }
+                        )
+                        if event.get("checkpoint_id"):
+                            checkpoint_id = str(event.get("checkpoint_id"))
+                    if etype != "checkpoint":
+                        yield _sse(event)
+                elif etype == "done":
+                    assistant_text = str(event.get("text") or "".join(full_parts)).strip()
+                    usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
+                    blocks = event.get("blocks") if isinstance(event.get("blocks"), list) else []
+                    fcs = event.get("file_changes") if isinstance(event.get("file_changes"), list) else file_changes
+                    checkpoint_id = event.get("checkpoint_id") or checkpoint_id
+                    payload = _finalize_chat(
+                        ctx,
+                        assistant_text,
+                        usage,
+                        event,
+                        blocks=blocks,
+                        file_changes=fcs,
+                        checkpoint_id=checkpoint_id,
+                    )
+                    finalized = True
+                    yield _sse({"type": "done", **payload})
+                elif etype == "error":
+                    yield _sse({"type": "error", "detail": event.get("detail") or "Stream failed"})
+        except providers.ProviderError as e:
+            yield _sse({"type": "error", "detail": str(e)})
+        except Exception as e:  # noqa: BLE001
+            yield _sse({"type": "error", "detail": str(e)})
+        finally:
+            if aborted and not finalized and ctx.get("source") == "local":
+                try:
+                    _finalize_chat(
+                        ctx,
+                        "".join(full_parts).strip(),
+                        {},
+                        {"provider": ctx["settings"].provider},
+                        blocks=blocks or None,
+                        file_changes=file_changes or None,
+                        checkpoint_id=checkpoint_id,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _sse(payload: dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _prepare_chat(body: ChatBody) -> dict[str, Any]:
     s = _settings()
     if not providers.provider_connected(s):
         raise HTTPException(status_code=400, detail="Connect Foundry or AWS first.")
@@ -401,7 +564,6 @@ async def send_chat(body: ChatBody):
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
     else:
-        # External transcript: Cursor or Claude Code — fork to local on send
         cursor_thread = None
         claude_thread = None
         if s.cursor_link_enabled and workspaces.cursor_detection(s)["detected"]:
@@ -447,7 +609,8 @@ async def send_chat(body: ChatBody):
             raise HTTPException(status_code=404, detail="Chat not found")
 
     history = history[-MAX_HISTORY_MESSAGES:]
-    history.append({"role": "user", "content": model_message})
+    model_for_llm = agent_tools.expand_mentions(model_message, workspace)
+    history.append({"role": "user", "content": model_for_llm})
     merged: list[dict[str, str]] = []
     for item in history:
         if merged and merged[-1]["role"] == item["role"]:
@@ -458,29 +621,61 @@ async def send_chat(body: ChatBody):
         merged.pop(0)
 
     extras = [workspaces.workspace_context_block(workspace)]
+    if workspace:
+        extras.append(
+            "# Agent tools\n\n"
+            "You can use tools to list, read, search, and edit files inside the linked workspace only. "
+            "Prefer apply_patch for file changes. Keep edits minimal and explain what you changed."
+        )
     system = skills.build_system_preamble(
         s,
         include_cursor_settings=bool(s.cursor_link_enabled),
         active_skill=skill_name,
         extra_blocks=extras,
     )
+    return {
+        "settings": s,
+        "body": body,
+        "display_message": display_message,
+        "skill_name": skill_name,
+        "merged": merged,
+        "system": system,
+        "chat_id": chat_id,
+        "source": source,
+        "forked": forked,
+        "cursor_thread": cursor_thread,
+        "workspace": workspace,
+    }
 
-    try:
-        result = await providers.chat_completion(merged, system=system, settings=s)
-    except providers.ProviderError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
 
-    assistant_text = result["text"]
-    usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+def _finalize_chat(
+    ctx: dict[str, Any],
+    assistant_text: str,
+    usage: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    blocks: list[dict[str, Any]] | None = None,
+    file_changes: list[dict[str, Any]] | None = None,
+    checkpoint_id: str | None = None,
+) -> dict[str, Any]:
+    s = ctx["settings"]
+    body: ChatBody = ctx["body"]
+    source = ctx["source"]
+    chat_id = ctx["chat_id"]
+    cursor_thread = ctx["cursor_thread"]
     wb: dict[str, Any] | None = None
+    usage = usage if isinstance(usage, dict) else {}
 
     if source == "local":
         workspaces.append_local_exchange(
             chat_id,
-            user_text=display_message,
+            user_text=ctx["display_message"],
             assistant_text=assistant_text,
             settings=s,
             usage=usage,
+            blocks=blocks,
+            file_changes=file_changes,
+            checkpoint_id=checkpoint_id,
         )
         local_after = workspaces.load_local_chat(chat_id, s)
         usage_total = (local_after.usage_total if local_after else {}) or {}
@@ -488,7 +683,7 @@ async def send_chat(body: ChatBody):
         wb = writeback.write_back(
             body.chat_id,
             cursor_thread.summary.transcript_path,
-            user_text=display_message,
+            user_text=ctx["display_message"],
             assistant_text=assistant_text,
             settings=s,
         )
@@ -505,8 +700,11 @@ async def send_chat(body: ChatBody):
         "writeback": wb,
         "chat_id": chat_id,
         "source": source,
-        "skill": skill_name,
-        "forked": forked,
+        "skill": ctx["skill_name"],
+        "forked": ctx["forked"],
+        "file_changes": file_changes or [],
+        "blocks": blocks or [],
+        "checkpoint_id": checkpoint_id,
     }
 
 
