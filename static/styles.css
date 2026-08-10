@@ -253,10 +253,14 @@ html:not([data-theme="dark"]) .theme-icon-sun {
 }
 
 .brand-sub {
-  margin: 8px 0 0;
+  margin: 6px 0 0;
   color: var(--ink-soft);
-  font-size: 0.8rem;
-  line-height: 1.4;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .rail > .chats-panel {
@@ -1016,11 +1020,6 @@ select:focus {
   padding: 0 2px;
 }
 
-.attach-btn {
-  align-self: flex-end;
-  margin-bottom: 2px;
-}
-
 .tool-timeline,
 .blocks-panel {
   display: flex;
@@ -1108,7 +1107,7 @@ select:focus {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 2px 4px 12px;
+  padding: 2px 4px 10px;
   border-bottom: 1px solid var(--line);
   min-width: 0;
 }
@@ -1128,6 +1127,10 @@ select:focus {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+}
+
+.prompt-outline[hidden] {
+  display: none !important;
 }
 
 .prompt-outline-head {
@@ -1330,55 +1333,50 @@ select:focus {
   display: block;
 }
 
-.composer-meta {
+.composer-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 8px;
+  margin: 0 auto 6px;
+  width: 100%;
+  max-width: min(var(--measure) + 4rem, 100%);
   min-width: 0;
+  padding: 0 4px;
 }
 
-.composer-meta-right {
+.composer-controls {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
+  gap: 2px;
   flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.effort-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ink-soft);
-  font-size: 0.72rem;
-}
-
-.effort-label {
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-weight: 500;
-  font-size: 0.62rem;
+  min-width: 0;
 }
 
 .effort-select {
   appearance: none;
-  border: 1px solid var(--line);
-  background-color: var(--surface);
-  color: var(--ink);
+  border: 0;
+  background-color: transparent;
+  color: var(--ink-soft);
   border-radius: 999px;
-  padding: 4px 28px 4px 10px;
+  padding: 4px 22px 4px 8px;
   font: inherit;
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   font-weight: 500;
   cursor: pointer;
   background-image: linear-gradient(45deg, transparent 50%, var(--ink-soft) 50%),
     linear-gradient(135deg, var(--ink-soft) 50%, transparent 50%);
-  background-position: calc(100% - 14px) calc(50% - 2px), calc(100% - 9px) calc(50% - 2px);
+  background-position: calc(100% - 10px) calc(50% - 2px), calc(100% - 5px) calc(50% - 2px);
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
+  transition: color 160ms var(--ease), background-color 160ms var(--ease);
+}
+
+.effort-select:hover,
+.effort-select:focus-visible {
+  color: var(--ink);
+  background-color: var(--mist-2);
+  outline: none;
 }
 
 .effort-select:focus-visible {
@@ -1386,9 +1384,8 @@ select:focus {
   outline-offset: 1px;
 }
 
-.composer-meta .composer-hint {
-  margin: 0;
-  min-width: 0;
+.effort-select[hidden] {
+  display: none !important;
 }
 
 .session-chip {
@@ -1397,8 +1394,8 @@ select:focus {
   align-items: baseline;
   gap: 6px;
   flex-shrink: 0;
-  border: 1px solid var(--line);
-  background: var(--surface);
+  border: 0;
+  background: var(--mist-2);
   color: var(--ink-soft);
   border-radius: 999px;
   padding: 4px 10px;
@@ -1433,23 +1430,22 @@ select:focus {
 
 .stop-island {
   display: none;
-  align-items: center;
-  gap: 8px;
+  place-items: center;
   border: 0;
   background: var(--danger);
   color: #fff5f5;
   font: inherit;
   font-weight: 600;
-  font-size: 0.86rem;
-  padding: 10px 12px 10px 14px;
+  width: 2.55rem;
+  height: 2.55rem;
+  padding: 0;
   border-radius: 999px;
   cursor: pointer;
   flex-shrink: 0;
-  white-space: nowrap;
 }
 
 .stop-island:not([hidden]) {
-  display: inline-flex;
+  display: inline-grid;
 }
 
 .send-island[hidden],
@@ -1460,10 +1456,6 @@ select:focus {
 .stop-glyph {
   display: grid;
   place-items: center;
-  width: 1.7rem;
-  height: 1.7rem;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.18);
   font-size: 0.7rem;
 }
 
@@ -1519,9 +1511,13 @@ select:focus {
 }
 
 .sync-note {
-  margin: 10px 8px 0;
-  font-size: 0.78rem;
+  margin: 8px 8px 0;
+  font-size: 0.76rem;
   color: var(--ink-soft);
+}
+
+.sync-note[hidden] {
+  display: none !important;
 }
 
 .sync-note code {
@@ -1552,13 +1548,14 @@ select:focus {
   margin: 0 auto;
   min-height: 100%;
   text-align: center;
-  font-size: 1rem;
+  font-size: 0.98rem;
   color: var(--ink-soft);
   box-sizing: border-box;
+  opacity: 0.85;
 }
 
 .composer {
-  padding: 8px 4px 2px;
+  padding: 6px 4px 4px;
   min-width: 0;
   background: var(--surface-raised);
   flex-shrink: 0;
@@ -1737,21 +1734,18 @@ select:focus {
 }
 
 .composer-hint {
-  margin: 0 0 8px;
-  font-size: 0.74rem;
-  color: var(--ink-soft);
-  font-weight: 400;
+  margin: 0;
 }
 
 .composer-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
+  gap: 4px;
   align-items: end;
   width: 100%;
   max-width: min(var(--measure) + 4rem, 100%);
   margin: 0 auto;
-  padding: 6px 6px 6px 8px;
+  padding: 4px 4px 4px 10px;
   border: 1px solid var(--line-strong);
   border-radius: 22px;
   background: var(--mist);
@@ -1770,15 +1764,15 @@ select:focus {
 }
 
 .composer-actions {
-  display: grid;
-  grid-template-columns: 1fr;
-  align-items: end;
-  justify-items: end;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-bottom: 2px;
 }
 
 .composer-actions > .send-island,
 .composer-actions > .stop-island {
-  grid-area: 1 / 1;
+  position: relative;
 }
 
 .composer-input-wrap textarea {
@@ -1786,9 +1780,9 @@ select:focus {
   background: transparent;
   box-shadow: none;
   resize: none;
-  min-height: 52px;
+  min-height: 44px;
   max-height: 180px;
-  padding: 12px 8px 12px 12px;
+  padding: 10px 4px 10px 4px;
   line-height: 1.45;
 }
 
@@ -1796,22 +1790,47 @@ select:focus {
   box-shadow: none;
 }
 
+.attach-btn {
+  display: grid;
+  place-items: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 160ms var(--ease), background 160ms var(--ease);
+}
+
+.attach-btn:hover:not(:disabled),
+.attach-btn:focus-visible {
+  color: var(--ink);
+  background: var(--mist-2);
+  outline: none;
+}
+
+.attach-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .send-island {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+  display: inline-grid;
+  place-items: center;
   border: 0;
   background: var(--accent);
   color: #f4fbf7;
   font: inherit;
   font-weight: 600;
-  font-size: 0.86rem;
-  padding: 10px 12px 10px 14px;
+  width: 2.55rem;
+  height: 2.55rem;
+  padding: 0;
   border-radius: 999px;
   cursor: pointer;
   margin: 0;
   flex-shrink: 0;
-  white-space: nowrap;
   transition: background 220ms var(--ease), transform 160ms var(--ease);
 }
 
@@ -1822,11 +1841,11 @@ select:focus {
 .send-glyph {
   display: grid;
   place-items: center;
-  width: 1.7rem;
-  height: 1.7rem;
+  width: 100%;
+  height: 100%;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.18);
-  font-size: 0.95rem;
+  background: transparent;
+  font-size: 1.05rem;
   transition: transform 280ms var(--ease);
 }
 

@@ -22,7 +22,7 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260810s" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260811a" />
   </head>
   <body>
     <div class="atmosphere" aria-hidden="true">
@@ -199,43 +199,33 @@
         <div class="diff-backdrop" id="diff-backdrop" hidden></div>
 
         <form id="composer" class="composer">
-          <div class="composer-meta">
-            <label class="composer-hint" id="composer-hint" for="message-input">Select a chat or start a new one</label>
-            <div class="composer-meta-right">
-              <label class="effort-wrap" title="Agent writes files; Soft propose until Accept; Plan is read-only">
-                <span class="effort-label">Mode</span>
-                <select id="mode-select" class="effort-select" aria-label="Chat mode">
-                  <option value="agent" selected>Agent</option>
-                  <option value="soft">Soft apply</option>
-                  <option value="plan">Plan</option>
-                </select>
-              </label>
-              <label class="effort-wrap" id="thinking-wrap" title="Claude thinking style">
-                <span class="effort-label">Thinking</span>
-                <select id="thinking-select" class="effort-select" aria-label="Thinking mode">
-                  <option value="adaptive" selected>Adaptive</option>
-                  <option value="extended">Extended</option>
-                  <option value="off">Off</option>
-                </select>
-              </label>
-              <label class="effort-wrap" title="Model effort / thinking depth">
-                <span class="effort-label">Effort</span>
-                <select id="effort-select" class="effort-select" aria-label="Effort level">
-                  <option value="none">None</option>
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high" selected>High</option>
-                  <option value="extra_high">Extra high</option>
-                  <option value="max">Max</option>
-                  <option value="ultracode">Ultracode</option>
-                </select>
-              </label>
-              <span class="session-chip" id="token-session" title="Session tokens" tabindex="0" hidden>
-                <span class="session-label">Session</span>
-                <span class="session-value" id="token-session-value">0</span>
-                <span class="token-tip" id="token-session-tip" aria-hidden="true"></span>
-              </span>
+          <div class="composer-toolbar">
+            <div class="composer-controls" role="group" aria-label="Reply settings">
+              <select id="mode-select" class="effort-select" aria-label="Chat mode" title="Agent writes · Soft proposes · Plan is read-only">
+                <option value="agent" selected>Agent</option>
+                <option value="soft">Soft</option>
+                <option value="plan">Plan</option>
+              </select>
+              <select id="thinking-select" class="effort-select" aria-label="Thinking mode" title="Thinking style">
+                <option value="adaptive" selected>Adaptive</option>
+                <option value="extended">Extended</option>
+                <option value="off">Off</option>
+              </select>
+              <select id="effort-select" class="effort-select" aria-label="Effort level" title="Effort / thinking depth">
+                <option value="none">None</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high" selected>High</option>
+                <option value="extra_high">Extra high</option>
+                <option value="max">Max</option>
+                <option value="ultracode">Ultracode</option>
+              </select>
             </div>
+            <span class="session-chip" id="token-session" title="Session tokens" tabindex="0" hidden>
+              <span class="session-label">Session</span>
+              <span class="session-value" id="token-session-value">0</span>
+              <span class="token-tip" id="token-session-tip" aria-hidden="true"></span>
+            </span>
           </div>
           <div class="composer-shell">
             <div class="composer-input-wrap">
@@ -244,9 +234,10 @@
               <div id="mention-menu" class="slash-menu mention-menu" hidden></div>
               <textarea
                 id="message-input"
-                rows="2"
-                placeholder="Message… /skill or @file"
+                rows="1"
+                placeholder="Message…  / for skills · @ for files"
                 disabled
+                aria-label="Message"
               ></textarea>
             </div>
             <div class="composer-actions">
@@ -257,19 +248,20 @@
                 accept="image/*,.txt,.md,.json,.py,.js,.ts,.tsx,.css,.html,.csv,.yml,.yaml,.toml,.xml,.sh"
                 hidden
               />
-              <button id="attach-btn" type="button" class="ghost tiny attach-btn" title="Attach files or images" disabled>
-                Attach
+              <button id="attach-btn" type="button" class="attach-btn" title="Attach files or images" aria-label="Attach" disabled>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M21.4 11.6 12.1 21a5.5 5.5 0 0 1-7.8-7.8l9.9-9.9a3.5 3.5 0 0 1 5 5l-9.9 9.8a1.5 1.5 0 0 1-2.1-2.1l8.5-8.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
               </button>
-              <button id="send-btn" type="submit" class="send-island" disabled>
-                <span id="send-label">Send</span>
+              <button id="send-btn" type="submit" class="send-island" disabled aria-label="Send">
                 <span class="send-glyph" aria-hidden="true">↑</span>
               </button>
               <button id="stop-btn" type="button" class="stop-island" aria-label="Stop generating" hidden>
-                <span>Stop</span>
                 <span class="stop-glyph" aria-hidden="true">■</span>
               </button>
             </div>
           </div>
+          <p class="composer-hint sr-only" id="composer-hint">Select a chat or start a new one</p>
         </form>
       </main>
     </div>

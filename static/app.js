@@ -104,9 +104,10 @@ function syncModeSelect() {
 
 function syncThinkingSelect() {
   const el = $("thinking-select");
-  const wrap = $("thinking-wrap");
-  if (el) el.value = state.thinkingMode || "adaptive";
-  if (wrap) wrap.hidden = !state.supportsExtendedThinking;
+  if (el) {
+    el.value = state.thinkingMode || "adaptive";
+    el.hidden = !state.supportsExtendedThinking;
+  }
 }
 
 const MATH_DELIMITERS = [
@@ -195,8 +196,10 @@ function updateTokenMeter() {
   if (sessionVal) sessionVal.textContent = fmtCompact(usageTotal(state.usageSession));
   if (sessionTip) sessionTip.textContent = formatUsageTip(state.usageSession);
   const meter = $("token-meter");
-  if (meter) meter.hidden = !state.chatId;
-  if (sessionChip) sessionChip.hidden = !state.chatId;
+  const chatTotal = usageTotal(state.usageChat);
+  const sessionTotal = usageTotal(state.usageSession);
+  if (meter) meter.hidden = !state.chatId || chatTotal <= 0;
+  if (sessionChip) sessionChip.hidden = !state.chatId || sessionTotal <= 0;
 }
 
 function chatKey(chat) {
@@ -279,13 +282,14 @@ function setComposerEnabled(enabled, { connected = state.connected } = {}) {
   const attachBtn = $("attach-btn");
   if (attachBtn) attachBtn.disabled = !canSend;
   $("composer")?.classList.toggle("is-idle", !canSend);
+  const hint = $("composer-hint");
+  if (!hint) return;
   if (!enabled) {
-    $("composer-hint").textContent = "Select a chat or start a new one";
+    hint.textContent = "Select a chat or start a new one";
   } else if (!connected) {
-    $("composer-hint").textContent = "Connect a provider in Settings to send";
+    hint.textContent = "Connect a provider in Settings to send";
   } else {
-    $("composer-hint").textContent =
-      "Enter to send · Attach files · Edit/Regenerate · ⌥↑ prompts · Esc stops";
+    hint.textContent = "Message input ready";
   }
 }
 
@@ -1249,12 +1253,17 @@ async function compactChat() {
 function renderPromptOutline() {
   const list = $("prompt-outline-list");
   const btn = $("outline-btn");
+  const panel = $("prompt-outline");
   if (!list) return;
   list.innerHTML = "";
   const prompts = (state.messages || []).filter(
     (m) => m.role === "user" && String(m.text || "").trim()
   );
   if (btn) btn.hidden = !state.chatId || prompts.length < 2;
+  if (panel && (prompts.length < 2 || !state.chatId)) {
+    panel.hidden = true;
+    if (btn) btn.setAttribute("aria-expanded", "false");
+  }
   const compactBtn = $("compact-btn");
   if (compactBtn) {
     compactBtn.hidden = !state.chatId || state.chatSource !== "local" || (state.messages || []).length < 8;
@@ -1951,6 +1960,7 @@ async function openChat(id, sourceHint, transcriptPath) {
       : sourceLabel(state.chatSource);
     if (thread.workspace) $("workspace-select").value = thread.workspace;
     setComposerEnabled(true);
+    setOutlineOpen(false);
     renderMessages(thread.messages || []);
     showChatView(true);
     updateEmptyStage();
@@ -1958,17 +1968,19 @@ async function openChat(id, sourceHint, transcriptPath) {
     refreshCheckpointMenu().catch(() => {});
     const note = $("sync-note");
     if (note) {
-      note.hidden = false;
+      // Only surface notes that change behavior — skip generic tips.
       if (state.chatSource === "cursor" && $("writeback-toggle").checked) {
-        note.textContent = "Continuing a Cursor chat — replies can write back to the transcript.";
+        note.hidden = false;
+        note.textContent = "Cursor chat — replies can write back to the transcript.";
       } else if (state.chatSource === "claude-code") {
-        note.textContent = "Claude Code session — first reply continues as a local copy.";
+        note.hidden = false;
+        note.textContent = "Claude Code — first reply continues as a local copy.";
       } else if (state.chatSource === "chatgpt" || state.chatSource === "antigravity") {
-        note.textContent = `Imported from ${sourceLabel(state.chatSource)} — continue here on Foundry or Bedrock.`;
-      } else if (thread.workspace) {
-        note.textContent = "Workspace linked — agent can read/edit files. Use @ to mention a path.";
+        note.hidden = false;
+        note.textContent = `Imported from ${sourceLabel(state.chatSource)}.`;
       } else {
-        note.textContent = "Type / for skills · @ for files (link a workspace first).";
+        note.hidden = true;
+        note.textContent = "";
       }
     }
   } finally {
@@ -1982,7 +1994,7 @@ function renderMessages(messages) {
   state.messages = Array.isArray(messages) ? messages : [];
   state.promptCursor = -1;
   if (!state.messages.length) {
-    root.innerHTML = `<p class="empty">Start typing — use / for skills or @ for files.</p>`;
+    root.innerHTML = `<p class="empty">Say what you want to build or change.</p>`;
     return;
   }
   const lastIdx = state.messages.length - 1;
@@ -2550,7 +2562,12 @@ on("import-file", "change", (event) => {
 });
 
 on("message-input", "input", () => {
-  const value = $("message-input").value;
+  const input = $("message-input");
+  const value = input?.value || "";
+  if (input) {
+    input.style.height = "auto";
+    input.style.height = `${Math.min(180, Math.max(44, input.scrollHeight))}px`;
+  }
   const q = slashQuery(value);
   const mq = mentionQuery(value);
   if (q !== null) {
