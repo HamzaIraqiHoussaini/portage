@@ -275,7 +275,6 @@ async def run_agent_stream(
                             }
                         )
                         continue
-                    patch_writes += 1
                     if (
                         not soft_apply
                         and chat_id
@@ -318,6 +317,7 @@ async def run_agent_stream(
                                     content=str(pending_content),
                                     op=str(fc.get("op") or "update"),
                                     diff=str(fc.get("diff") or ""),
+                                    before_hash=str(fc.get("before_hash") or ""),
                                     settings=settings,
                                 )
                                 wire_fc["patch_id"] = meta["id"]
@@ -337,6 +337,8 @@ async def run_agent_stream(
                                 **wire_fc,
                                 "checkpoint_id": checkpoint_id,
                             }
+                    if name == "apply_patch" and not is_err:
+                        patch_writes += 1
                 except agent_tools.ToolError as e:
                     content = str(e)
                     is_err = True

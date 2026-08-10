@@ -714,6 +714,39 @@ select:focus {
   border-color: var(--ink);
 }
 
+.filter-imported {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.filter-imported > summary {
+  list-style: none;
+}
+
+.filter-imported > summary::-webkit-details-marker {
+  display: none;
+}
+
+.filter-imported-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 8.5rem;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 12%, transparent);
+}
+
+.filter-imported[open] > summary {
+  border-color: color-mix(in srgb, var(--ink) 35%, var(--line));
+}
+
 .chat-list {
   display: flex;
   flex-direction: column;
@@ -821,8 +854,14 @@ select:focus {
 .diff-drawer-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
+}
+
+.diff-drawer-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
 }
 
 .diff-drawer-title {
@@ -833,6 +872,7 @@ select:focus {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  flex: 1;
 }
 
 .diff-stats {
@@ -2032,6 +2072,32 @@ select.effort-select:focus-visible {
 
 .composer-hint {
   margin: 0;
+}
+
+.composer-workspace-cue {
+  margin: 8px 0 0;
+  max-width: min(var(--measure) + 4rem, 100%);
+  margin-inline: auto;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  line-height: 1.4;
+}
+
+button.linkish {
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+button.linkish:hover {
+  color: var(--ink);
 }
 
 .composer-shell {

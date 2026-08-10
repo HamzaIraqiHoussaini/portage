@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import uuid
@@ -10,6 +11,10 @@ from typing import Any
 
 from .config import Settings, get_settings
 from .workspaces import SAFE_CHAT_ID_RE
+
+
+def content_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _root(settings: Settings) -> Path:
@@ -36,6 +41,7 @@ def store_pending(
     content: str,
     op: str,
     diff: str,
+    before_hash: str | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     """Persist a proposed patch; returns metadata without full content."""
@@ -48,6 +54,7 @@ def store_pending(
         "path": path,
         "op": op or "update",
         "diff": diff or "",
+        "before_hash": before_hash or "",
         "created_at": int(time.time() * 1000),
         "status": "pending",
     }
@@ -82,6 +89,16 @@ def discard_pending(chat_id: str, patch_id: str, settings: Settings | None = Non
         path.unlink(missing_ok=True)
 
 
+def discard_all(chat_id: str, settings: Settings | None = None) -> int:
+    s = settings or get_settings()
+    dest = _chat_dir(chat_id, s)
+    n = 0
+    for f in dest.glob("*.json"):
+        f.unlink(missing_ok=True)
+        n += 1
+    return n
+
+
 def list_pending(chat_id: str, settings: Settings | None = None) -> list[dict[str, Any]]:
     s = settings or get_settings()
     dest = _chat_dir(chat_id, s)
@@ -99,6 +116,7 @@ def list_pending(chat_id: str, settings: Settings | None = None) -> list[dict[st
                 "path": data.get("path"),
                 "op": data.get("op"),
                 "diff": data.get("diff") or "",
+                "before_hash": data.get("before_hash") or "",
                 "created_at": data.get("created_at"),
                 "status": data.get("status") or "pending",
                 "pending": True,

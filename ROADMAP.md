@@ -12,10 +12,13 @@ Shipped in this program: bottom composer, workspace agent tools + diffs, rich Cu
 - Plan mode (read-only tools) and `spawn_subagent` for focused research
 - Chat mechanics: edit & resubmit, regenerate, fork, rewind, copy, ⌥↑ prompt recall
 - Prompt outline, Compact summary, and edit-branch ‹ › version switching
-- Soft apply mode (propose patches until Accept / Discard)
-- Per-turn `apply_patch` write budget (6 calls)
+- Soft apply / Propose mode (propose patches until Accept / Discard)
+- Per-turn `apply_patch` write budget (6 successful calls)
 - Streaming token deltas inside Foundry tool rounds
-- Message attachments (text files + images)
+- Message attachments (text files + images; server caps; images Foundry-only)
+- Propose Accept conflict check (`before_hash`) when the file changed on disk
+- Composer workspace linking cue; sidebar Claude Code + Imported filters
+- Diff drawer Accept / Discard when reviewing pending proposals
 
 ## Explicitly out of scope (for now)
 

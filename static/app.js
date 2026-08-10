@@ -283,13 +283,28 @@ function setComposerEnabled(enabled, { connected = state.connected } = {}) {
   if (attachBtn) attachBtn.disabled = !canSend;
   $("composer")?.classList.toggle("is-idle", !canSend);
   const hint = $("composer-hint");
-  if (!hint) return;
-  if (!enabled) {
-    hint.textContent = "Select a chat or start a new one";
-  } else if (!connected) {
-    hint.textContent = "Connect a provider in Settings to send";
-  } else {
-    hint.textContent = "Message input ready";
+  if (hint) {
+    if (!enabled) {
+      hint.textContent = "Select a chat or start a new one";
+    } else if (!connected) {
+      hint.textContent = "Connect a provider in Settings to send";
+    } else {
+      hint.textContent = "Message input ready";
+    }
+  }
+  updateWorkspaceCue(canSend);
+}
+
+function updateWorkspaceCue(canSend = true) {
+  const cue = $("workspace-cue");
+  const input = $("message-input");
+  const ws = $("workspace-select")?.value || "";
+  const needsFolder = canSend && !ws;
+  if (cue) cue.hidden = !needsFolder;
+  if (input && canSend) {
+    input.placeholder = needsFolder
+      ? "Message…  Link a folder to use @files and tools"
+      : "Message…  / skills · @ files · drop to attach";
   }
 }
 
@@ -555,7 +570,7 @@ function onSettingsKeydown(event) {
   }
 }
 
-function openSettings({ focusConnect = false } = {}) {
+function openSettings({ focusConnect = false, focusWorkspace = false } = {}) {
   const sheet = $("settings-sheet");
   const backdrop = $("settings-backdrop");
   const shell = $("app-shell");
@@ -573,6 +588,11 @@ function openSettings({ focusConnect = false } = {}) {
     requestAnimationFrame(() => {
       $("connect-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
       ($("connect-btn") || $("settings-close"))?.focus();
+    });
+  } else if (focusWorkspace) {
+    requestAnimationFrame(() => {
+      $("workspace-path")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      ($("workspace-path") || $("settings-close"))?.focus();
     });
   } else {
     requestAnimationFrame(() => $("settings-close")?.focus());
@@ -1040,6 +1060,7 @@ function openDiffDrawer(changes, focusPath = null) {
   const view = $("diff-view");
   const backdrop = $("diff-backdrop");
   const headTitle = drawer?.querySelector(".diff-drawer-title");
+  const drawerActions = $("diff-drawer-actions");
   if (!drawer || !list || !view) return;
   state.lastFileChanges = changes || [];
   list.innerHTML = "";
@@ -1056,6 +1077,12 @@ function openDiffDrawer(changes, focusPath = null) {
   }
 
   const items = changes || [];
+  const pending = items.filter((c) => c && c.pending && c.patch_id);
+  if (drawerActions) {
+    drawerActions.hidden = pending.length === 0;
+    drawerActions.dataset.count = String(pending.length);
+  }
+
   let activeIdx = 0;
   if (focusPath) {
     const found = items.findIndex((c) => c.path === focusPath);
@@ -1122,8 +1149,10 @@ function openDiffDrawer(changes, focusPath = null) {
 function closeDiffDrawer() {
   const drawer = $("diff-drawer");
   const backdrop = $("diff-backdrop");
+  const drawerActions = $("diff-drawer-actions");
   if (drawer) drawer.hidden = true;
   if (backdrop) backdrop.hidden = true;
+  if (drawerActions) drawerActions.hidden = true;
 }
 
 async function restoreCheckpoint(checkpointId, stripEl = null) {
@@ -1916,6 +1945,7 @@ function renderWorkspaces(list) {
     select.appendChild(opt);
   }
   if ([...select.options].some((o) => o.value === current)) select.value = current;
+  updateWorkspaceCue(!!state.chatId && state.connected);
 }
 
 async function loadSkills() {
@@ -2759,16 +2789,40 @@ document.querySelectorAll(".seg-btn").forEach((btn) => {
   btn.addEventListener("click", () => setProviderUI(btn.dataset.provider));
 });
 
-document.querySelectorAll("#source-filter .filter-chip").forEach((btn) => {
-  btn.addEventListener("click", () => {
+document.querySelectorAll("#source-filter [data-filter]").forEach((btn) => {
+  btn.addEventListener("click", (event) => {
+    event.preventDefault();
     state.sourceFilter = btn.dataset.filter || "all";
-    document.querySelectorAll("#source-filter .filter-chip").forEach((b) => {
+    document.querySelectorAll("#source-filter [data-filter]").forEach((b) => {
       const on = b === btn;
       b.classList.toggle("active", on);
       b.setAttribute("aria-pressed", on ? "true" : "false");
     });
+    const imported = $("filter-imported");
+    if (imported) {
+      const isImport = state.sourceFilter === "chatgpt" || state.sourceFilter === "antigravity";
+      imported.open = isImport;
+      imported.querySelector("summary")?.classList.toggle("active", isImport);
+    }
     renderChatList();
   });
+});
+on("diff-accept", "click", async () => {
+  const pending = (state.lastFileChanges || []).filter((c) => c && c.pending && c.patch_id);
+  if (!pending.length) return;
+  await applyPendingPatches(pending);
+  closeDiffDrawer();
+});
+on("diff-discard", "click", async () => {
+  const pending = (state.lastFileChanges || []).filter((c) => c && c.pending && c.patch_id);
+  if (!pending.length) return;
+  await rejectPendingPatches(pending);
+  closeDiffDrawer();
+});
+on("workspace-cue-btn", "click", () => openSettings({ focusWorkspace: true }));
+on("workspace-select", "change", () => {
+  loadWorkspaceFiles($("workspace-select").value || null).catch(() => {});
+  updateWorkspaceCue(!!state.chatId && state.connected);
 });
 
 on("connect-btn", "click", connect);
@@ -2874,9 +2928,6 @@ document.addEventListener("click", (event) => {
   const wrap = $("checkpoint-wrap");
   if (!wrap || wrap.hidden) return;
   if (!wrap.contains(event.target)) hideCheckpointMenu();
-});
-on("workspace-select", "change", () => {
-  loadWorkspaceFiles($("workspace-select").value || null).catch(() => {});
 });
 on("mobile-back", "click", () => showChatView(false));
 on("import-btn", "click", () => $("import-file")?.click());

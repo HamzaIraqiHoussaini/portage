@@ -442,6 +442,7 @@ def _apply_patch(
     content: str,
     *,
     dry_run: bool = False,
+    expected_before_hash: str | None = None,
 ) -> dict[str, Any]:
     if not rel.strip():
         raise ToolError("path is required")
@@ -457,12 +458,22 @@ def _apply_patch(
         if not path.is_file():
             raise ToolError("Cannot overwrite a directory")
         before = path.read_text(encoding="utf-8", errors="replace")
+    from .pending_patches import content_sha256
+
+    before_hash = content_sha256(before)
+    if expected_before_hash is not None and expected_before_hash != "":
+        if before_hash != expected_before_hash:
+            raise ToolError(
+                "File changed on disk since this proposal. "
+                "Discard and re-propose, or resolve the conflict manually."
+            )
     label = rel_to_workspace(workspace, path)
     diff = unified_diff(label, before, content)
     change = {
         "path": label,
         "op": "update" if existed else "create",
         "diff": diff,
+        "before_hash": before_hash,
     }
     if dry_run:
         change["pending"] = True
@@ -479,9 +490,21 @@ def _apply_patch(
     return {"content": summary, "file_change": change}
 
 
-def apply_pending_patch(workspace: str, *, path: str, content: str) -> dict[str, Any]:
+def apply_pending_patch(
+    workspace: str,
+    *,
+    path: str,
+    content: str,
+    expected_before_hash: str | None = None,
+) -> dict[str, Any]:
     """Write a previously proposed soft-apply patch to disk."""
-    return _apply_patch(workspace, path, content, dry_run=False)
+    return _apply_patch(
+        workspace,
+        path,
+        content,
+        dry_run=False,
+        expected_before_hash=expected_before_hash,
+    )
 
 
 def anthropic_tools_payload(

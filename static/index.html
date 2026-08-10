@@ -99,9 +99,14 @@
             <button type="button" class="filter-chip active" data-filter="all" aria-pressed="true">All</button>
             <button type="button" class="filter-chip" data-filter="local" aria-pressed="false">Local</button>
             <button type="button" class="filter-chip" data-filter="cursor" aria-pressed="false">Cursor</button>
-            <button type="button" class="filter-chip" data-filter="claude-code" aria-pressed="false">Claude</button>
-            <button type="button" class="filter-chip" data-filter="chatgpt" aria-pressed="false">ChatGPT</button>
-            <button type="button" class="filter-chip" data-filter="antigravity" aria-pressed="false" title="Antigravity">Anti</button>
+            <button type="button" class="filter-chip" data-filter="claude-code" aria-pressed="false">Claude Code</button>
+            <details class="filter-imported" id="filter-imported">
+              <summary class="filter-chip" title="Imported chats">Imported</summary>
+              <div class="filter-imported-menu" role="group" aria-label="Imported sources">
+                <button type="button" class="filter-chip" data-filter="chatgpt" aria-pressed="false">ChatGPT</button>
+                <button type="button" class="filter-chip" data-filter="antigravity" aria-pressed="false">Antigravity</button>
+              </div>
+            </details>
           </div>
           <div id="chat-list" class="chat-list"></div>
         </section>
@@ -191,6 +196,10 @@
         <aside class="diff-drawer" id="diff-drawer" hidden>
           <div class="diff-drawer-head">
             <h2 class="diff-drawer-title">Files changed</h2>
+            <div class="diff-drawer-actions" id="diff-drawer-actions" hidden>
+              <button type="button" class="ghost tiny" id="diff-discard">Discard</button>
+              <button type="button" class="btn-primary tiny-action" id="diff-accept">Accept all</button>
+            </div>
             <button type="button" class="ghost tiny" id="diff-close" aria-label="Close diff">×</button>
           </div>
           <ul class="diff-file-list" id="diff-file-list"></ul>
@@ -281,6 +290,11 @@
             </div>
           </div>
           <p class="composer-hint sr-only" id="composer-hint">Select a chat or start a new one</p>
+          <p class="composer-workspace-cue" id="workspace-cue" hidden>
+            No folder linked —
+            <button type="button" class="linkish" id="workspace-cue-btn">Link a workspace</button>
+            to use @files and tools.
+          </p>
         </form>
       </main>
     </div>

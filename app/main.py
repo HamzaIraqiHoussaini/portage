@@ -384,6 +384,7 @@ async def apply_pending_patch(body: PatchApplyBody):
             workspace,
             path=str(patch.get("path") or ""),
             content=str(patch.get("content") or ""),
+            expected_before_hash=str(patch.get("before_hash") or "") or None,
         )
         pending_patches.discard_pending(body.chat_id, body.patch_id, s)
         fc = result.get("file_change") if isinstance(result.get("file_change"), dict) else {}
@@ -432,6 +433,7 @@ async def apply_all_pending_patches(body: PatchApplyAllBody):
                     workspace,
                     path=str(patch.get("path") or ""),
                     content=str(patch.get("content") or ""),
+                    expected_before_hash=str(patch.get("before_hash") or "") or None,
                 )
                 pending_patches.discard_pending(body.chat_id, pid, s)
                 fc = result.get("file_change") if isinstance(result.get("file_change"), dict) else {}
@@ -1024,7 +1026,10 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
     att_meta: list[dict[str, Any]] = []
     text_extra: list[str] = []
     image_blocks: list[dict[str, Any]] = []
-    for raw in body.attachments or []:
+    raw_atts = body.attachments or []
+    if len(raw_atts) > 6:
+        raise HTTPException(status_code=400, detail="Max 6 attachments per message.")
+    for raw in raw_atts:
         if not isinstance(raw, dict):
             continue
         name = str(raw.get("name") or "file")[:200]
@@ -1032,12 +1037,24 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
         text_body = raw.get("text")
         data_b64 = raw.get("data_base64")
         if isinstance(text_body, str) and text_body.strip():
+            if len(text_body.encode("utf-8")) > 200_000:
+                raise HTTPException(
+                    status_code=400, detail=f"{name} is too large (max 200KB for text)"
+                )
             clipped = text_body[:80_000]
             text_extra.append(f"\n\n--- attached: {name} ---\n{clipped}")
             att_meta.append({"name": name, "mime": mime, "kind": "text"})
         elif isinstance(data_b64, str) and data_b64 and mime.startswith("image/"):
+            if s.provider == "aws":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Image attachments are not supported on AWS Bedrock yet. Use Foundry, or attach text files.",
+                )
+            # ~4MB decoded ≈ 5.5M base64 chars
             if len(data_b64) > 5_500_000:
-                continue
+                raise HTTPException(
+                    status_code=400, detail=f"{name} is too large (max 4MB for images)"
+                )
             media = (
                 mime
                 if mime in ("image/jpeg", "image/png", "image/gif", "image/webp")
