@@ -2,9 +2,14 @@
 
 Shipped in this program: bottom composer, workspace agent tools + diffs, rich Cursor/Claude tool cards, `@` mentions, checkpoints + Reject restore.
 
-## Explicitly out of scope (for now)
+## Shipped follow-ups
 
-Do not start these until phases 0–3 are stable in daily use:
+- Colorized `+`/`−` lines in the diff drawer
+- Allowlisted `run_command` under workspace cwd (no shell; git limited to status/diff/log/…)
+- Symlink-safe workspace walks for grep / file index
+- Checkpoint list UI in the chat header (restore with confirm)
+
+## Explicitly out of scope (for now)
 
 - Integrated terminal panel
 - Full git blame / PR review UI
@@ -13,9 +18,8 @@ Do not start these until phases 0–3 are stable in daily use:
 - Full Cursor Settings sync
 - Writing structured `tool_use` blocks back into Cursor JSONL (writeback stays text-safe)
 
-## Nice follow-ups
+## Still nice later
 
 - Streaming token deltas inside a single tool round (not just per text block)
-- Allowlisted `run_command` under workspace cwd
-- Apply proposed patches without writing until user confirms (soft apply mode)
-- Checkpoint list UI in chat header
+- Soft apply mode (propose patches without writing until confirm)
+- Per-turn write budget across multiple `apply_patch` calls

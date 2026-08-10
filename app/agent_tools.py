@@ -13,6 +13,37 @@ MAX_WRITE_BYTES = 400_000
 MAX_GREP_HITS = 40
 MAX_LIST_ENTRIES = 80
 MAX_DIFF_CHARS = 24_000
+MAX_CMD_OUTPUT = 40_000
+MAX_CMD_TIMEOUT = 30
+
+ALLOWED_COMMANDS = frozenset(
+    {
+        "python",
+        "python3",
+        "node",
+        "npm",
+        "npx",
+        "pip",
+        "pip3",
+        "pytest",
+        "cargo",
+        "go",
+        "make",
+        "git",
+        "rg",
+        "ls",
+        "cat",
+        "wc",
+        "head",
+        "tail",
+        "echo",
+        "pwd",
+        "which",
+    }
+)
+GIT_ALLOWED_SUBCOMMANDS = frozenset(
+    {"status", "diff", "log", "show", "ls-files", "rev-parse", "branch", "describe"}
+)
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
@@ -67,6 +98,24 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "content": {"type": "string", "description": "Full new file contents."},
             },
             "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "run_command",
+        "description": (
+            "Run an allowlisted command in the linked workspace (no shell). "
+            "Allowed binaries: python, node, npm, git (status/diff/log/…), pytest, cargo, go, make, rg, ls, etc."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Argv list, e.g. [\"git\", \"status\", \"--short\"].",
+                },
+            },
+            "required": ["command"],
         },
     },
 ]
@@ -129,7 +178,61 @@ def execute_tool(name: str, raw_input: dict[str, Any] | None, *, workspace: str)
         return _grep(workspace, str(args.get("pattern") or ""), str(args.get("path") or "."))
     if name == "apply_patch":
         return _apply_patch(workspace, str(args.get("path") or ""), str(args.get("content") or ""))
+    if name == "run_command":
+        return _run_command(workspace, args.get("command"))
     raise ToolError(f"Unknown tool: {name}")
+
+
+def iter_workspace_files(workspace: str, start: Path | None = None, *, limit: int = 400):
+    """Yield files under workspace without following symlink directories outside the root."""
+    root = Path(workspace).expanduser().resolve()
+    base = start or root
+    if not base.exists():
+        return
+    stack = [base]
+    seen = 0
+    while stack and seen < limit:
+        current = stack.pop()
+        try:
+            if current.is_symlink():
+                real = current.resolve()
+                if not real.is_relative_to(root):
+                    continue
+                current = real
+            if current.is_file():
+                if any(part.startswith(".") for part in current.relative_to(root).parts):
+                    continue
+                yield current
+                seen += 1
+                continue
+            if not current.is_dir():
+                continue
+            for child in sorted(current.iterdir(), key=lambda p: p.name.lower()):
+                if child.name.startswith("."):
+                    continue
+                if child.is_symlink():
+                    try:
+                        real = child.resolve()
+                    except OSError:
+                        continue
+                    if not real.is_relative_to(root):
+                        continue
+                    if real.is_dir():
+                        stack.append(real)
+                    elif real.is_file():
+                        yield real
+                        seen += 1
+                        if seen >= limit:
+                            return
+                elif child.is_dir():
+                    stack.append(child)
+                elif child.is_file():
+                    yield child
+                    seen += 1
+                    if seen >= limit:
+                        return
+        except OSError:
+            continue
 
 
 def _list_dir(workspace: str, rel: str) -> dict[str, Any]:
@@ -189,16 +292,10 @@ def _grep(workspace: str, pattern: str, rel: str) -> dict[str, Any]:
     if root.is_file():
         files = [root]
     elif root.is_dir():
-        for p in root.rglob("*"):
-            if not p.is_file():
-                continue
-            if any(part.startswith(".") for part in p.parts):
-                continue
+        for p in iter_workspace_files(workspace, root, limit=400):
             if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".zip", ".pyc"}:
                 continue
             files.append(p)
-            if len(files) > 400:
-                break
     else:
         raise ToolError(f"Not found: {rel}")
 
@@ -220,6 +317,51 @@ def _grep(workspace: str, pattern: str, rel: str) -> dict[str, Any]:
                 if len(hits) >= MAX_GREP_HITS:
                     return {"content": "\n".join(hits) + "\n… (hit limit)"}
     return {"content": "\n".join(hits) if hits else "(no matches)"}
+
+
+def _run_command(workspace: str, command: Any) -> dict[str, Any]:
+    import shutil
+    import subprocess
+
+    if not isinstance(command, list) or not command:
+        raise ToolError("command must be a non-empty argv array")
+    argv = [str(x) for x in command]
+    if any("\0" in a for a in argv):
+        raise ToolError("Invalid argument")
+    binary = Path(argv[0]).name
+    if binary not in ALLOWED_COMMANDS:
+        raise ToolError(f"Command not allowed: {binary}")
+    if binary == "git":
+        sub = next((a for a in argv[1:] if not a.startswith("-")), "")
+        if sub not in GIT_ALLOWED_SUBCOMMANDS:
+            raise ToolError(
+                f"git subcommand not allowed: {sub or '(missing)'}. "
+                f"Allowed: {', '.join(sorted(GIT_ALLOWED_SUBCOMMANDS))}"
+            )
+    resolved = shutil.which(binary)
+    if not resolved:
+        raise ToolError(f"Command not found on PATH: {binary}")
+    cwd = Path(workspace).expanduser().resolve()
+    if not cwd.is_dir():
+        raise ToolError("Workspace missing")
+    try:
+        proc = subprocess.run(  # noqa: S603 — argv only, allowlisted binary, no shell
+            [resolved, *argv[1:]],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=MAX_CMD_TIMEOUT,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise ToolError(f"Command timed out after {MAX_CMD_TIMEOUT}s") from e
+    except OSError as e:
+        raise ToolError(str(e)) from e
+    out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+    if len(out) > MAX_CMD_OUTPUT:
+        out = out[:MAX_CMD_OUTPUT] + "\n… (truncated)"
+    header = f"$ {' '.join(argv)}\n(exit {proc.returncode})\n"
+    return {"content": header + (out.strip() or "(no output)")}
 
 
 def _apply_patch(workspace: str, rel: str, content: str) -> dict[str, Any]:
@@ -273,15 +415,7 @@ def index_workspace_files(workspace: str, *, limit: int = 400) -> list[str]:
     root = Path(workspace).expanduser().resolve()
     if not root.is_dir():
         return []
-    out: list[str] = []
-    for p in root.rglob("*"):
-        if not p.is_file():
-            continue
-        if any(part.startswith(".") for part in p.relative_to(root).parts):
-            continue
-        out.append(rel_to_workspace(workspace, p))
-        if len(out) >= limit:
-            break
+    out = [rel_to_workspace(workspace, p) for p in iter_workspace_files(workspace, root, limit=limit)]
     return sorted(out)
 
 

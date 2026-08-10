@@ -115,6 +115,12 @@
             <h1 id="active-title">No conversation open</h1>
           </div>
           <div class="stage-tools">
+            <div class="checkpoint-wrap" id="checkpoint-wrap" hidden>
+              <button type="button" class="ghost tiny" id="checkpoint-btn" aria-haspopup="true" aria-expanded="false">
+                Checkpoints
+              </button>
+              <div class="checkpoint-menu" id="checkpoint-menu" hidden></div>
+            </div>
             <button
               type="button"
               class="icon-btn mobile-only"
@@ -173,7 +179,7 @@
             <button type="button" class="ghost tiny" id="diff-close" aria-label="Close diff">×</button>
           </div>
           <ul class="diff-file-list" id="diff-file-list"></ul>
-          <pre class="diff-view" id="diff-view"></pre>
+          <pre class="diff-view" id="diff-view" aria-label="Unified diff"></pre>
         </aside>
         <div class="diff-backdrop" id="diff-backdrop" hidden></div>
 

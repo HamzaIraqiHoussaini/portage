@@ -624,8 +624,9 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
     if workspace:
         extras.append(
             "# Agent tools\n\n"
-            "You can use tools to list, read, search, and edit files inside the linked workspace only. "
-            "Prefer apply_patch for file changes. Keep edits minimal and explain what you changed."
+            "You can use tools to list, read, search, edit files, and run allowlisted commands "
+            "inside the linked workspace only. Prefer apply_patch for file changes. "
+            "For commands use run_command with an argv array (no shell). Keep edits minimal."
         )
     system = skills.build_system_preamble(
         s,

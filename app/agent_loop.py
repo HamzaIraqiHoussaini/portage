@@ -110,6 +110,8 @@ async def run_agent_stream(
             for key in ("path", "pattern"):
                 if key in raw_input:
                     safe_input[key] = raw_input.get(key)
+            if name == "run_command" and isinstance(raw_input.get("command"), list):
+                safe_input["command"] = [str(x) for x in raw_input["command"][:20]]
             yield {
                 "type": "tool_start",
                 "id": tool_id,

@@ -545,6 +545,20 @@ function createFilesChangedStrip(changes, { checkpointId = null } = {}) {
   return strip;
 }
 
+function renderDiffHtml(diffText) {
+  const lines = String(diffText || "").split("\n");
+  return lines
+    .map((line) => {
+      let cls = "diff-line";
+      if (line.startsWith("+++") || line.startsWith("---")) cls += " diff-file";
+      else if (line.startsWith("@@")) cls += " diff-hunk";
+      else if (line.startsWith("+")) cls += " diff-add";
+      else if (line.startsWith("-")) cls += " diff-del";
+      return `<span class="${cls}">${escapeHtml(line) || " "}</span>`;
+    })
+    .join("\n");
+}
+
 function openDiffDrawer(changes) {
   const drawer = $("diff-drawer");
   const list = $("diff-file-list");
@@ -553,7 +567,7 @@ function openDiffDrawer(changes) {
   if (!drawer || !list || !view) return;
   state.lastFileChanges = changes || [];
   list.innerHTML = "";
-  view.textContent = "";
+  view.innerHTML = "";
   (changes || []).forEach((c, i) => {
     const li = document.createElement("li");
     const btn = document.createElement("button");
@@ -562,11 +576,11 @@ function openDiffDrawer(changes) {
     btn.addEventListener("click", () => {
       list.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      view.textContent = c.diff || "(no diff available)";
+      view.innerHTML = renderDiffHtml(c.diff || "(no diff available)");
     });
     if (i === 0) {
       btn.classList.add("active");
-      view.textContent = c.diff || "(no diff available)";
+      view.innerHTML = renderDiffHtml(c.diff || "(no diff available)");
     }
     li.appendChild(btn);
     list.appendChild(li);
@@ -608,9 +622,73 @@ async function restoreCheckpoint(checkpointId, stripEl = null) {
       if (names) names.textContent = "Files restored from checkpoint";
     }
     closeDiffDrawer();
+    hideCheckpointMenu();
+    await refreshCheckpointMenu();
   } catch (err) {
     setConnectStatus(String(err.message || err), "err");
   }
+}
+
+function hideCheckpointMenu() {
+  const menu = $("checkpoint-menu");
+  const btn = $("checkpoint-btn");
+  if (menu) menu.hidden = true;
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
+async function refreshCheckpointMenu() {
+  const wrap = $("checkpoint-wrap");
+  const menu = $("checkpoint-menu");
+  if (!wrap || !menu) return;
+  if (!state.chatId || state.chatSource !== "local") {
+    wrap.hidden = true;
+    hideCheckpointMenu();
+    return;
+  }
+  try {
+    const data = await api(`/api/chats/${encodeURIComponent(state.chatId)}/checkpoints`);
+    const list = data.checkpoints || [];
+    wrap.hidden = list.length === 0;
+    if (!list.length) {
+      hideCheckpointMenu();
+      return;
+    }
+    menu.innerHTML = list
+      .slice(0, 12)
+      .map((cp) => {
+        const when = cp.created_at ? new Date(cp.created_at).toLocaleString() : cp.id;
+        const n = (cp.paths || []).length;
+        return `<button type="button" class="checkpoint-item" data-id="${escapeHtml(cp.id)}">
+          <strong>${escapeHtml(String(when))}</strong>
+          <span>${n} file${n === 1 ? "" : "s"}</span>
+        </button>`;
+      })
+      .join("");
+    menu.querySelectorAll(".checkpoint-item").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.id;
+        const ok = window.confirm("Restore this checkpoint? Current file contents for those paths will be overwritten.");
+        if (!ok) return;
+        restoreCheckpoint(id);
+      });
+    });
+  } catch {
+    wrap.hidden = true;
+  }
+}
+
+async function toggleCheckpointMenu() {
+  const menu = $("checkpoint-menu");
+  const btn = $("checkpoint-btn");
+  if (!menu || !btn) return;
+  if (!menu.hidden) {
+    hideCheckpointMenu();
+    return;
+  }
+  await refreshCheckpointMenu();
+  if ($("checkpoint-wrap")?.hidden) return;
+  menu.hidden = false;
+  btn.setAttribute("aria-expanded", "true");
 }
 
 function createBubble(role, text, usage = null, extras = {}) {
@@ -1173,6 +1251,7 @@ async function openChat(id, sourceHint, transcriptPath) {
     showChatView(true);
     updateEmptyStage();
     loadWorkspaceFiles($("workspace-select").value || thread.workspace || null).catch(() => {});
+    refreshCheckpointMenu().catch(() => {});
     const note = $("sync-note");
     if (note) {
       note.hidden = false;
@@ -1382,6 +1461,7 @@ async function sendMessage(event) {
       }
       scrollMessages(root);
       await loadChats();
+      refreshCheckpointMenu().catch(() => {});
     } else {
       const partial = assembled.trim();
       if (partial || liveFileChanges.length) {
@@ -1630,6 +1710,12 @@ document.addEventListener("keydown", (event) => {
 });
 on("diff-close", "click", closeDiffDrawer);
 on("diff-backdrop", "click", closeDiffDrawer);
+on("checkpoint-btn", "click", () => toggleCheckpointMenu().catch(() => {}));
+document.addEventListener("click", (event) => {
+  const wrap = $("checkpoint-wrap");
+  if (!wrap || wrap.hidden) return;
+  if (!wrap.contains(event.target)) hideCheckpointMenu();
+});
 on("workspace-select", "change", () => {
   loadWorkspaceFiles($("workspace-select").value || null).catch(() => {});
 });
