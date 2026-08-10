@@ -1961,6 +1961,29 @@ select.effort-select:focus-visible {
   box-shadow: 0 12px 32px var(--focus-glow);
 }
 
+.composer-shell.is-drop-target,
+.composer.is-drop-target .composer-shell {
+  position: relative;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line-strong));
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--mist));
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.composer.is-drop-target .composer-shell::after {
+  content: "Drop to attach";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
+  color: var(--accent-ink);
+  font-size: 0.86rem;
+  font-weight: 600;
+  pointer-events: none;
+  z-index: 3;
+}
+
 @media (max-width: 720px) {
   .composer-shell {
     grid-template-columns: minmax(0, 1fr) auto;

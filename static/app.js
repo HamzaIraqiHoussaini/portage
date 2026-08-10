@@ -362,6 +362,87 @@ async function addAttachmentFiles(fileList) {
   renderAttachChips();
 }
 
+function canAcceptAttachments() {
+  return !!(state.chatId && state.connected && !state.streaming);
+}
+
+function dragHasFiles(event) {
+  const types = event.dataTransfer?.types;
+  if (!types) return false;
+  return Array.from(types).includes("Files");
+}
+
+function setComposerDropActive(on) {
+  const shell = document.querySelector("#composer .composer-shell");
+  if (shell) shell.classList.toggle("is-drop-target", !!on);
+  const form = $("composer");
+  if (form) form.classList.toggle("is-drop-target", !!on);
+}
+
+function bindComposerDrop() {
+  const form = $("composer");
+  if (!form || form.dataset.dropBound === "1") return;
+  form.dataset.dropBound = "1";
+  let depth = 0;
+
+  form.addEventListener("dragenter", (event) => {
+    if (!dragHasFiles(event) || !canAcceptAttachments()) return;
+    event.preventDefault();
+    depth += 1;
+    setComposerDropActive(true);
+  });
+  form.addEventListener("dragover", (event) => {
+    if (!dragHasFiles(event) || !canAcceptAttachments()) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    setComposerDropActive(true);
+  });
+  form.addEventListener("dragleave", (event) => {
+    if (!dragHasFiles(event)) return;
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) setComposerDropActive(false);
+  });
+  form.addEventListener("drop", (event) => {
+    event.preventDefault();
+    depth = 0;
+    setComposerDropActive(false);
+    if (!canAcceptAttachments()) return;
+    const files = event.dataTransfer?.files;
+    if (files?.length) addAttachmentFiles(files);
+  });
+
+  // Catch drops on the message area too (same attachments flow).
+  const stage = $("stage");
+  if (stage && stage.dataset.dropBound !== "1") {
+    stage.dataset.dropBound = "1";
+    let stageDepth = 0;
+    stage.addEventListener("dragenter", (event) => {
+      if (!dragHasFiles(event) || !canAcceptAttachments()) return;
+      event.preventDefault();
+      stageDepth += 1;
+      setComposerDropActive(true);
+    });
+    stage.addEventListener("dragover", (event) => {
+      if (!dragHasFiles(event) || !canAcceptAttachments()) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    });
+    stage.addEventListener("dragleave", () => {
+      stageDepth = Math.max(0, stageDepth - 1);
+      if (stageDepth === 0) setComposerDropActive(false);
+    });
+    stage.addEventListener("drop", (event) => {
+      if (!dragHasFiles(event)) return;
+      event.preventDefault();
+      stageDepth = 0;
+      setComposerDropActive(false);
+      if (!canAcceptAttachments()) return;
+      const files = event.dataTransfer?.files;
+      if (files?.length) addAttachmentFiles(files);
+    });
+  }
+}
+
 function setProviderCollapsed(collapsed) {
   const body = $("provider-body");
   const chip = $("provider-chip-settings");
@@ -2675,6 +2756,7 @@ on("attach-input", "change", (event) => {
     });
   }
 });
+bindComposerDrop();
 on("diff-close", "click", closeDiffDrawer);
 on("diff-backdrop", "click", closeDiffDrawer);
 on("checkpoint-btn", "click", () => toggleCheckpointMenu().catch(() => {}));
