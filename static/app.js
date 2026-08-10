@@ -1,6 +1,7 @@
 const SESSION_KEY = "portage.sessionTokens";
 const EFFORT_KEY = "portage.effort";
 const MODE_KEY = "portage.mode";
+const THINKING_KEY = "portage.thinkingMode";
 
 const state = {
   chatId: null,
@@ -18,11 +19,14 @@ const state = {
   streamAbort: null,
   streaming: false,
   streamChatId: null,
+  streamPhase: null,
   workspaceFiles: [],
   mentionIndex: 0,
   lastFileChanges: [],
   effort: loadEffort(),
   mode: loadMode(),
+  thinkingMode: loadThinkingMode(),
+  supportsExtendedThinking: true,
 };
 
 function loadEffort() {
@@ -62,6 +66,26 @@ function saveMode(value) {
   }
 }
 
+function loadThinkingMode() {
+  try {
+    const v = localStorage.getItem(THINKING_KEY);
+    const allowed = ["adaptive", "extended", "off"];
+    return allowed.includes(v) ? v : "adaptive";
+  } catch {
+    return "adaptive";
+  }
+}
+
+function saveThinkingMode(value) {
+  const allowed = ["adaptive", "extended", "off"];
+  state.thinkingMode = allowed.includes(value) ? value : "adaptive";
+  try {
+    localStorage.setItem(THINKING_KEY, state.thinkingMode);
+  } catch {
+    /* ignore */
+  }
+}
+
 function syncEffortSelect() {
   const el = $("effort-select");
   if (!el) return;
@@ -72,6 +96,13 @@ function syncModeSelect() {
   const el = $("mode-select");
   if (!el) return;
   el.value = state.mode || "agent";
+}
+
+function syncThinkingSelect() {
+  const el = $("thinking-select");
+  const wrap = $("thinking-wrap");
+  if (el) el.value = state.thinkingMode || "adaptive";
+  if (wrap) wrap.hidden = !state.supportsExtendedThinking;
 }
 
 const MATH_DELIMITERS = [
@@ -814,10 +845,17 @@ function createUsageBadge(usage) {
 function createStreamingBubble() {
   const div = document.createElement("article");
   div.className = "bubble assistant streaming";
+  const head = document.createElement("div");
+  head.className = "bubble-head";
   const roleEl = document.createElement("span");
   roleEl.className = "role";
   roleEl.textContent = "assistant";
-  div.appendChild(roleEl);
+  head.appendChild(roleEl);
+  const phaseEl = document.createElement("span");
+  phaseEl.className = "stream-phase";
+  phaseEl.textContent = "Starting…";
+  head.appendChild(phaseEl);
+  div.appendChild(head);
   const timeline = document.createElement("div");
   timeline.className = "tool-timeline";
   div.appendChild(timeline);
@@ -828,7 +866,39 @@ function createStreamingBubble() {
   body.className = "bubble-body";
   body.innerHTML = "";
   div.appendChild(body);
-  return { bubble: div, body, timeline, filesStripHost, fileChanges: [] };
+  return { bubble: div, body, timeline, filesStripHost, phaseEl, fileChanges: [] };
+}
+
+function phaseLabel(phase, detail) {
+  switch (phase) {
+    case "thinking":
+      return "Thinking…";
+    case "writing":
+      return "Writing…";
+    case "tool":
+      return detail ? `Using tools (${detail})…` : "Using tools…";
+    case "model":
+      return detail === "streaming" ? "Waiting for model…" : "Waiting for model…";
+    case "truncated":
+      return "Truncated (max tokens)";
+    default:
+      return detail ? String(detail) : "Working…";
+  }
+}
+
+function setStreamPhase(bubble, phaseEl, phase, detail) {
+  state.streamPhase = phase || null;
+  if (phaseEl) {
+    phaseEl.textContent = phaseLabel(phase, detail);
+    phaseEl.dataset.phase = phase || "";
+  }
+  if (bubble) {
+    bubble.dataset.phase = phase || "";
+  }
+  const stop = $("stop-btn");
+  if (stop && state.streaming) {
+    stop.setAttribute("aria-label", `Stop · ${phaseLabel(phase, detail)}`);
+  }
 }
 
 function paintStreamingBody(body, text) {
@@ -944,6 +1014,9 @@ function updateStreamingFiles(host, fileChanges) {
 
 function finalizeStreamingBubble(bubble, body, text, usage, extras = {}) {
   bubble.classList.remove("streaming");
+  delete bubble.dataset.phase;
+  const phase = bubble.querySelector(".stream-phase");
+  if (phase) phase.remove();
   bubble.querySelectorAll(".tool-summary").forEach((el) => el.remove());
   const blocks = extras.blocks || null;
   const fileChanges = extras.file_changes || [];
@@ -987,6 +1060,7 @@ function finalizeStreamingBubble(bubble, body, text, usage, extras = {}) {
 
 function setStreamingUi(on) {
   state.streaming = on;
+  if (!on) state.streamPhase = null;
   const send = $("send-btn");
   const stop = $("stop-btn");
   if (send) {
@@ -1128,6 +1202,13 @@ async function loadStatus() {
   }
 
   renderWorkspaces(s.workspaces || []);
+
+  const modelName = String(s.model || "");
+  state.supportsExtendedThinking =
+    s.supports_extended_thinking !== undefined
+      ? !!s.supports_extended_thinking
+      : s.provider === "foundry" || /claude/i.test(modelName);
+  syncThinkingSelect();
 
   const chipText = s.connected ? `Connected · ${s.provider} · ${s.model}` : "Not connected · Settings";
   if (s.connected) {
@@ -1457,9 +1538,10 @@ async function sendMessage(event) {
   scrollMessages(root, { force: true });
 
   const streamUi = createStreamingBubble();
-  const { bubble: replyBubble, body: replyBody, timeline, filesStripHost } = streamUi;
+  const { bubble: replyBubble, body: replyBody, timeline, filesStripHost, phaseEl } = streamUi;
   const liveFileChanges = streamUi.fileChanges;
   root.appendChild(replyBubble);
+  setStreamPhase(replyBubble, phaseEl, "model", "starting");
   scrollMessages(root, { force: true });
 
   const controller = new AbortController();
@@ -1496,6 +1578,9 @@ async function sendMessage(event) {
         transcript_path: state.transcriptPath,
         effort: state.effort || $("effort-select")?.value || "high",
         mode: state.mode || $("mode-select")?.value || "agent",
+        thinking_mode: state.supportsExtendedThinking
+          ? state.thinkingMode || $("thinking-select")?.value || "adaptive"
+          : "adaptive",
       }),
       signal: controller.signal,
     });
@@ -1548,13 +1633,18 @@ async function sendMessage(event) {
               note.textContent = "Link a workspace in Settings to enable file tools & diffs.";
             }
           }
+        } else if (event.type === "status") {
+          setStreamPhase(replyBubble, phaseEl, event.phase, event.detail);
         } else if (event.type === "delta" && event.text) {
           assembled += event.text;
+          setStreamPhase(replyBubble, phaseEl, "writing");
           schedulePaint();
         } else if (event.type === "thinking" && event.text) {
+          setStreamPhase(replyBubble, phaseEl, "thinking");
           appendThinkingTimeline(timeline, event.text, { subagentId: event.subagent_id || null });
           scrollMessages(root);
         } else if (event.type === "tool_start" || event.type === "tool_result") {
+          setStreamPhase(replyBubble, phaseEl, "tool", event.name || "");
           appendToolTimeline(timeline, event);
           scrollMessages(root);
         } else if (
@@ -1562,6 +1652,7 @@ async function sendMessage(event) {
           event.type === "subagent_delta" ||
           event.type === "subagent_done"
         ) {
+          setStreamPhase(replyBubble, phaseEl, "tool", event.label || "subagent");
           appendSubagentTimeline(timeline, event);
           scrollMessages(root);
         } else if (event.type === "file_change") {
@@ -1864,6 +1955,10 @@ on("effort-select", "change", () => {
   const el = $("effort-select");
   if (el) saveEffort(el.value);
 });
+on("thinking-select", "change", () => {
+  const el = $("thinking-select");
+  if (el) saveThinkingMode(el.value);
+});
 on("mode-select", "change", () => {
   const el = $("mode-select");
   if (el) saveMode(el.value);
@@ -1982,6 +2077,7 @@ window.addEventListener("resize", () => {
   applyTheme(saved || currentTheme(), { persist: false });
   syncEffortSelect();
   syncModeSelect();
+  syncThinkingSelect();
   setStreamingUi(false);
   setComposerEnabled(false);
   showChatView(false);

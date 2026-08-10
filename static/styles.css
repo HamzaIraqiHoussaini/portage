@@ -1207,6 +1207,8 @@ select:focus {
   align-items: center;
   gap: 10px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .effort-wrap {
@@ -1328,8 +1330,11 @@ select:focus {
   font-size: 0.7rem;
 }
 
-.bubble.streaming .bubble-body {
-  white-space: pre-wrap;
+.bubble.streaming .bubble-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 4px;
 }
 
 .bubble.streaming .role::after {
@@ -1342,6 +1347,28 @@ select:focus {
   background: var(--accent);
   vertical-align: middle;
   animation: pulse-dot 1s ease infinite;
+}
+
+.stream-phase {
+  font-size: 0.72rem;
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.stream-phase[data-phase="thinking"] {
+  color: var(--accent-ink);
+}
+
+.stream-phase[data-phase="tool"] {
+  color: var(--ink-soft);
+}
+
+.stream-phase[data-phase="truncated"] {
+  color: var(--danger);
+}
+
+.bubble.streaming .bubble-body {
+  white-space: pre-wrap;
 }
 
 @keyframes pulse-dot {

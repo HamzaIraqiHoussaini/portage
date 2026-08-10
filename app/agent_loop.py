@@ -27,22 +27,26 @@ async def run_agent_stream(
     chat_id: str | None = None,
     cancel_check=None,
     effort: str | None = None,
+    thinking_mode: str | None = None,
     mode: str | None = None,
     depth: int = 0,
 ) -> AsyncIterator[dict[str, Any]]:
     """
     Yield events:
-      delta, thinking, tool_start, tool_result, file_change,
+      status, delta, thinking, tool_start, tool_result, file_change,
       subagent_start, subagent_delta, subagent_done, done, error
     When workspace is set, tools are enabled; otherwise text-only stream.
     """
     agent_mode = normalize_mode(mode)
+    think_mode = providers.normalize_thinking_mode(thinking_mode)
     if not workspace:
+        yield {"type": "status", "phase": "model", "detail": "streaming"}
         async for event in providers.stream_chat_completion(
             _as_text_messages(messages),
             system=system,
             settings=settings,
             effort=effort,
+            thinking_mode=think_mode,
         ):
             if cancel_check and cancel_check():
                 return
@@ -68,6 +72,11 @@ async def run_agent_stream(
         if cancel_check and cancel_check():
             cancelled = True
             break
+        yield {
+            "type": "status",
+            "phase": "model",
+            "detail": "waiting" if _round == 0 else f"round {_round + 1}",
+        }
         try:
             result = await providers.chat_completion_with_tools(
                 working,
@@ -75,6 +84,7 @@ async def run_agent_stream(
                 settings=settings,
                 tools=tools,
                 effort=effort,
+                thinking_mode=thinking_mode,
                 mode=agent_mode,
                 allow_subagents=allow_subagents,
             )
@@ -103,11 +113,13 @@ async def run_agent_stream(
                 if t:
                     text_parts.append(t)
                     blocks.append({"type": "text", "text": t})
+                    yield {"type": "status", "phase": "writing"}
                     yield {"type": "delta", "text": t}
             elif btype in ("thinking", "reasoning"):
                 think = str(block.get("thinking") or block.get("text") or "")
                 if think.strip():
                     blocks.append({"type": "thinking", "text": think})
+                    yield {"type": "status", "phase": "thinking"}
                     yield {"type": "thinking", "text": think}
             elif btype == "tool_use":
                 tool_uses.append(block)
@@ -120,8 +132,21 @@ async def run_agent_stream(
                     }
                 )
 
-        stop = result.get("stop_reason") or "end_turn"
-        if not tool_uses or stop == "end_turn":
+        stop = str(result.get("stop_reason") or "")
+        # Always run tools when the model requested them. Some gateways mis-label
+        # stop_reason as end_turn even when tool_use blocks are present.
+        if tool_uses:
+            yield {"type": "status", "phase": "tool", "detail": f"{len(tool_uses)} tool(s)"}
+        else:
+            if stop in ("max_tokens", "max_tokens_reached"):
+                note = (
+                    "\n\n_(Stopped early: hit max tokens while thinking/responding. "
+                    "Raise Effort or max tokens and continue.)_"
+                )
+                text_parts.append(note)
+                blocks.append({"type": "text", "text": note})
+                yield {"type": "delta", "text": note}
+                yield {"type": "status", "phase": "truncated", "detail": stop}
             break
 
         working.append({"role": "assistant", "content": content_blocks})
@@ -163,6 +188,7 @@ async def run_agent_stream(
                     workspace=workspace,
                     cancel_check=cancel_check,
                     effort=effort,
+                    thinking_mode=think_mode,
                     mode=agent_mode,
                     depth=depth,
                     usage_acc=usage_acc,
@@ -267,6 +293,7 @@ async def _run_spawned_subagent_events(
     workspace: str,
     cancel_check,
     effort: str | None,
+    thinking_mode: str | None,
     mode: str,
     depth: int,
     usage_acc: dict[str, int],
@@ -312,6 +339,7 @@ async def _run_spawned_subagent_events(
         chat_id=None,
         cancel_check=cancel_check,
         effort=effort,
+        thinking_mode=thinking_mode,
         mode=mode,
         depth=depth + 1,
     ):

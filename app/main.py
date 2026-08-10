@@ -56,6 +56,7 @@ class ChatBody(BaseModel):
     transcript_path: str | None = None
     effort: str | None = None
     mode: str | None = None
+    thinking_mode: str | None = None
 
 
 class WorkspaceBody(BaseModel):
@@ -125,6 +126,10 @@ async def status():
         "claude_code_active": claude_link,
         "skills_count": len(skill_list),
         "priority_skills": [x.name for x in skill_list if x.priority][:40],
+        "supports_extended_thinking": (
+            s.provider == "foundry"
+            or "claude" in ((s.aws_model_id if s.provider == "aws" else s.foundry_model) or "").lower()
+        ),
         "settings_path": str(s.settings_json),
         "workspaces": workspaces.list_workspaces(s),
         "import_sources": [
@@ -413,6 +418,7 @@ async def send_chat(body: ChatBody):
             system=ctx["system"],
             settings=ctx["settings"],
             effort=ctx.get("effort"),
+            thinking_mode=ctx.get("thinking_mode"),
         )
     except providers.ProviderError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
@@ -452,6 +458,7 @@ async def send_chat_stream(body: ChatBody, request: Request):
                 chat_id=ctx["chat_id"] if ctx.get("source") == "local" else None,
                 cancel_check=lambda: disconnected["v"],
                 effort=ctx.get("effort"),
+                thinking_mode=ctx.get("thinking_mode"),
                 mode=ctx.get("mode"),
             ):
                 if await request.is_disconnected():
@@ -459,7 +466,15 @@ async def send_chat_stream(body: ChatBody, request: Request):
                     aborted = True
                     break
                 etype = event.get("type")
-                if etype == "delta":
+                if etype == "status":
+                    yield _sse(
+                        {
+                            "type": "status",
+                            "phase": event.get("phase") or "model",
+                            "detail": event.get("detail"),
+                        }
+                    )
+                elif etype == "delta":
                     text = str(event.get("text") or "")
                     if text:
                         full_parts.append(text)
@@ -688,6 +703,7 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
         "cursor_thread": cursor_thread,
         "workspace": workspace,
         "effort": providers.normalize_effort(body.effort),
+        "thinking_mode": providers.normalize_thinking_mode(body.thinking_mode),
         "mode": mode,
     }
 

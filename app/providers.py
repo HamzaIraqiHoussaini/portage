@@ -99,6 +99,15 @@ EFFORT_API = {
     "max": "max",
     "ultracode": "max",
 }
+THINKING_MODES = ("adaptive", "extended", "off")
+EXTENDED_BUDGET = {
+    "low": 4_096,
+    "medium": 8_192,
+    "high": 16_384,
+    "extra_high": 32_000,
+    "max": 64_000,
+    "ultracode": 100_000,
+}
 
 
 def normalize_effort(raw: str | None) -> str:
@@ -115,29 +124,59 @@ def normalize_effort(raw: str | None) -> str:
     return value if value in EFFORT_LEVELS else "high"
 
 
+def normalize_thinking_mode(raw: str | None) -> str:
+    value = (raw or "adaptive").strip().lower().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "none": "off",
+        "disabled": "off",
+        "default": "adaptive",
+        "auto": "adaptive",
+        "budget": "extended",
+        "enabled": "extended",
+        "classic": "extended",
+    }
+    value = aliases.get(value, value)
+    return value if value in THINKING_MODES else "adaptive"
+
+
 def apply_effort_to_payload(
     payload: dict[str, Any],
     *,
     effort: str | None,
     settings: Settings,
+    thinking_mode: str | None = None,
     include_thinking_display: bool = True,
 ) -> dict[str, Any]:
-    """Mutate Foundry/Anthropic Messages payload for effort + adaptive thinking."""
+    """Mutate Foundry/Anthropic Messages payload for effort + thinking."""
     level = normalize_effort(effort)
-    if level == "none":
+    mode = normalize_thinking_mode(thinking_mode)
+    if level == "none" or mode == "off":
         payload["thinking"] = {"type": "disabled"}
+        payload.pop("output_config", None)
+        return payload
+
+    base = int(payload.get("max_tokens") or settings.foundry_max_tokens or 8192)
+
+    if mode == "extended":
+        budget = EXTENDED_BUDGET.get(level, 16_384)
+        # Extended thinking needs max_tokens > budget_tokens.
+        payload["max_tokens"] = max(base, budget + 8_192)
+        thinking: dict[str, Any] = {"type": "enabled", "budget_tokens": budget}
+        if include_thinking_display:
+            # Older extended-thinking APIs ignore display; newer ones may honor it.
+            thinking["display"] = "summarized"
+        payload["thinking"] = thinking
         payload.pop("output_config", None)
         return payload
 
     api_effort = EFFORT_API[level]
     # Newer models default display to "omitted" (empty thinking text) — ask for summaries.
-    thinking: dict[str, Any] = {"type": "adaptive"}
+    thinking = {"type": "adaptive"}
     if include_thinking_display:
         thinking["display"] = "summarized"
     payload["thinking"] = thinking
     payload["output_config"] = {"effort": api_effort}
 
-    base = int(payload.get("max_tokens") or settings.foundry_max_tokens or 8192)
     if level == "ultracode":
         payload["max_tokens"] = max(base, 65536)
     elif level in ("extra_high", "max"):
@@ -152,6 +191,23 @@ def _thinking_display_unsupported(status: int, body: str) -> bool:
         return False
     lower = (body or "").lower()
     return "display" in lower and ("thinking" in lower or "unknown" in lower or "invalid" in lower)
+
+
+def _thinking_mode_unsupported(status: int, body: str) -> bool:
+    if status < 400:
+        return False
+    lower = (body or "").lower()
+    return any(
+        needle in lower
+        for needle in (
+            "budget_tokens",
+            "thinking.type",
+            "adaptive",
+            "extended thinking",
+            "output_config",
+            "effort",
+        )
+    ) and ("thinking" in lower or "invalid" in lower or "unknown" in lower or "not support" in lower)
 
 
 def _foundry_headers(settings: Settings) -> dict[str, str]:
@@ -182,6 +238,7 @@ async def _foundry_chat(
     settings: Settings,
     max_tokens: int | None = None,
     effort: str | None = None,
+    thinking_mode: str | None = None,
 ) -> dict[str, Any]:
     from .security import normalize_usage, sanitize_provider_error, validate_foundry_url
 
@@ -200,7 +257,9 @@ async def _foundry_chat(
         "system": system,
         "messages": messages,
     }
-    apply_effort_to_payload(payload, effort=effort, settings=settings)
+    apply_effort_to_payload(
+        payload, effort=effort, settings=settings, thinking_mode=thinking_mode
+    )
     async with httpx.AsyncClient(timeout=300.0, follow_redirects=False) as client:
         resp = await client.post(
             url,
@@ -209,7 +268,27 @@ async def _foundry_chat(
         )
         if _thinking_display_unsupported(resp.status_code, resp.text):
             apply_effort_to_payload(
-                payload, effort=effort, settings=settings, include_thinking_display=False
+                payload,
+                effort=effort,
+                settings=settings,
+                thinking_mode=thinking_mode,
+                include_thinking_display=False,
+            )
+            resp = await client.post(
+                url,
+                headers=_foundry_headers(settings),
+                json=payload,
+            )
+        elif (
+            normalize_thinking_mode(thinking_mode) == "extended"
+            and _thinking_mode_unsupported(resp.status_code, resp.text)
+        ):
+            # Fall back to adaptive if classic extended thinking isn't available.
+            apply_effort_to_payload(
+                payload,
+                effort=effort,
+                settings=settings,
+                thinking_mode="adaptive",
             )
             resp = await client.post(
                 url,
@@ -238,6 +317,7 @@ async def _foundry_chat_stream(
     settings: Settings,
     max_tokens: int | None = None,
     effort: str | None = None,
+    thinking_mode: str | None = None,
 ):
     """Yield dict events: thinking/delta, then done {text, usage, model, provider, blocks}."""
     from .security import sanitize_provider_error, validate_foundry_url
@@ -258,14 +338,18 @@ async def _foundry_chat_stream(
         "messages": messages,
         "stream": True,
     }
-    apply_effort_to_payload(payload, effort=effort, settings=settings)
+    mode = normalize_thinking_mode(thinking_mode)
+    apply_effort_to_payload(
+        payload, effort=effort, settings=settings, thinking_mode=mode
+    )
     parts: list[str] = []
     thinking_parts: list[str] = []
     usage_acc: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     headers = {**_foundry_headers(settings), "Accept": "text/event-stream"}
+    yield {"type": "status", "phase": "model", "detail": "streaming"}
 
     async with httpx.AsyncClient(timeout=300.0, follow_redirects=False) as client:
-        for attempt in range(2):
+        for attempt in range(3):
             async with client.stream("POST", url, headers=headers, json=payload) as resp:
                 if resp.status_code >= 400:
                     body = (await resp.aread()).decode("utf-8", errors="replace")
@@ -274,7 +358,21 @@ async def _foundry_chat_stream(
                             payload,
                             effort=effort,
                             settings=settings,
+                            thinking_mode=mode,
                             include_thinking_display=False,
+                        )
+                        continue
+                    if (
+                        attempt < 2
+                        and mode == "extended"
+                        and _thinking_mode_unsupported(resp.status_code, body)
+                    ):
+                        mode = "adaptive"
+                        apply_effort_to_payload(
+                            payload,
+                            effort=effort,
+                            settings=settings,
+                            thinking_mode="adaptive",
                         )
                         continue
                     raise ProviderError(sanitize_provider_error(resp.status_code, body))
@@ -338,11 +436,13 @@ async def _iter_foundry_sse(resp, *, parts: list[str], thinking_parts: list[str]
                 think = delta.get("thinking")
                 if think:
                     thinking_parts.append(str(think))
+                    yield {"type": "status", "phase": "thinking"}
                     yield {"type": "thinking", "text": str(think)}
             else:
                 text = delta.get("text")
                 if text:
                     parts.append(str(text))
+                    yield {"type": "status", "phase": "writing"}
                     yield {"type": "delta", "text": str(text)}
         elif dtype == "message_start":
             msg = data.get("message") if isinstance(data.get("message"), dict) else {}
@@ -507,6 +607,7 @@ async def chat_completion(
     settings: Settings | None = None,
     max_tokens: int | None = None,
     effort: str | None = None,
+    thinking_mode: str | None = None,
 ) -> dict[str, Any]:
     s = settings or get_settings()
     if s.provider == "aws":
@@ -516,7 +617,12 @@ async def chat_completion(
             _aws_chat_sync, messages, system=system, settings=s, max_tokens=max_tokens
         )
     return await _foundry_chat(
-        messages, system=system, settings=s, max_tokens=max_tokens, effort=effort
+        messages,
+        system=system,
+        settings=s,
+        max_tokens=max_tokens,
+        effort=effort,
+        thinking_mode=thinking_mode,
     )
 
 
@@ -528,6 +634,7 @@ async def chat_completion_with_tools(
     tools: list[dict[str, Any]] | None = None,
     max_tokens: int | None = None,
     effort: str | None = None,
+    thinking_mode: str | None = None,
     mode: str | None = None,
     allow_subagents: bool = True,
 ) -> dict[str, Any]:
@@ -554,6 +661,7 @@ async def chat_completion_with_tools(
         tools=tool_defs,
         max_tokens=max_tokens,
         effort=effort,
+        thinking_mode=thinking_mode,
     )
 
 
@@ -565,6 +673,7 @@ async def _foundry_chat_with_tools(
     tools: list[dict[str, Any]],
     max_tokens: int | None = None,
     effort: str | None = None,
+    thinking_mode: str | None = None,
 ) -> dict[str, Any]:
     from .security import normalize_usage, sanitize_provider_error, validate_foundry_url
 
@@ -583,12 +692,27 @@ async def _foundry_chat_with_tools(
     }
     if tools:
         payload["tools"] = tools
-    apply_effort_to_payload(payload, effort=effort, settings=settings)
+    mode = normalize_thinking_mode(thinking_mode)
+    apply_effort_to_payload(
+        payload, effort=effort, settings=settings, thinking_mode=mode
+    )
     async with httpx.AsyncClient(timeout=300.0, follow_redirects=False) as client:
         resp = await client.post(url, headers=_foundry_headers(settings), json=payload)
         if _thinking_display_unsupported(resp.status_code, resp.text):
             apply_effort_to_payload(
-                payload, effort=effort, settings=settings, include_thinking_display=False
+                payload,
+                effort=effort,
+                settings=settings,
+                thinking_mode=mode,
+                include_thinking_display=False,
+            )
+            resp = await client.post(url, headers=_foundry_headers(settings), json=payload)
+        elif mode == "extended" and _thinking_mode_unsupported(resp.status_code, resp.text):
+            apply_effort_to_payload(
+                payload,
+                effort=effort,
+                settings=settings,
+                thinking_mode="adaptive",
             )
             resp = await client.post(url, headers=_foundry_headers(settings), json=payload)
     if resp.status_code >= 400:
@@ -712,7 +836,11 @@ def _aws_chat_with_tools_sync(
                 }
             )
     stop = data.get("stopReason")
-    mapped_stop = "tool_use" if stop == "tool_use" else "end_turn"
+    has_tools = any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content)
+    if has_tools or stop in ("tool_use", "toolUse"):
+        mapped_stop = "tool_use"
+    else:
+        mapped_stop = str(stop or "end_turn")
     usage_raw = data.get("usage") if isinstance(data.get("usage"), dict) else {}
     return {
         "text": "\n".join(text_parts).strip(),
@@ -732,6 +860,7 @@ async def stream_chat_completion(
     settings: Settings | None = None,
     max_tokens: int | None = None,
     effort: str | None = None,
+    thinking_mode: str | None = None,
 ):
     """Async generator of stream events (delta / done)."""
     s = settings or get_settings()
@@ -776,7 +905,12 @@ async def stream_chat_completion(
         return
 
     async for event in _foundry_chat_stream(
-        messages, system=system, settings=s, max_tokens=max_tokens, effort=effort
+        messages,
+        system=system,
+        settings=s,
+        max_tokens=max_tokens,
+        effort=effort,
+        thinking_mode=thinking_mode,
     ):
         yield event
 
