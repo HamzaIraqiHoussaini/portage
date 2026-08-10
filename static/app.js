@@ -1,4 +1,5 @@
 const SESSION_KEY = "portage.sessionTokens";
+const EFFORT_KEY = "portage.effort";
 
 const state = {
   chatId: null,
@@ -19,7 +20,33 @@ const state = {
   workspaceFiles: [],
   mentionIndex: 0,
   lastFileChanges: [],
+  effort: loadEffort(),
 };
+
+function loadEffort() {
+  try {
+    const v = localStorage.getItem(EFFORT_KEY);
+    const allowed = ["none", "low", "medium", "high", "extra_high", "max", "ultracode"];
+    return allowed.includes(v) ? v : "high";
+  } catch {
+    return "high";
+  }
+}
+
+function saveEffort(value) {
+  state.effort = value;
+  try {
+    localStorage.setItem(EFFORT_KEY, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+function syncEffortSelect() {
+  const el = $("effort-select");
+  if (!el) return;
+  el.value = state.effort || "high";
+}
 
 const MATH_DELIMITERS = [
   { left: "$$", right: "$$", display: true },
@@ -1354,6 +1381,7 @@ async function sendMessage(event) {
         source: state.chatSource,
         workspace: $("workspace-select").value || null,
         transcript_path: state.transcriptPath,
+        effort: state.effort || $("effort-select")?.value || "high",
       }),
       signal: controller.signal,
     });
@@ -1708,6 +1736,10 @@ document.addEventListener("keydown", (event) => {
   const mentions = $("mention-menu");
   if (mentions && !mentions.hidden) hideMentionMenu();
 });
+on("effort-select", "change", () => {
+  const el = $("effort-select");
+  if (el) saveEffort(el.value);
+});
 on("diff-close", "click", closeDiffDrawer);
 on("diff-backdrop", "click", closeDiffDrawer);
 on("checkpoint-btn", "click", () => toggleCheckpointMenu().catch(() => {}));
@@ -1820,6 +1852,7 @@ window.addEventListener("resize", () => {
 (async function init() {
   const saved = storedTheme();
   applyTheme(saved || currentTheme(), { persist: false });
+  syncEffortSelect();
   setStreamingUi(false);
   setComposerEnabled(false);
   showChatView(false);

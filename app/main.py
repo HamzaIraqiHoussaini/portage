@@ -54,6 +54,7 @@ class ChatBody(BaseModel):
     source: str | None = None
     workspace: str | None = None
     transcript_path: str | None = None
+    effort: str | None = None
 
 
 class WorkspaceBody(BaseModel):
@@ -407,7 +408,10 @@ async def send_chat(body: ChatBody):
     ctx = _prepare_chat(body)
     try:
         result = await providers.chat_completion(
-            ctx["merged"], system=ctx["system"], settings=ctx["settings"]
+            ctx["merged"],
+            system=ctx["system"],
+            settings=ctx["settings"],
+            effort=ctx.get("effort"),
         )
     except providers.ProviderError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
@@ -445,6 +449,7 @@ async def send_chat_stream(body: ChatBody, request: Request):
                 workspace=ctx.get("workspace"),
                 chat_id=ctx["chat_id"] if ctx.get("source") == "local" else None,
                 cancel_check=lambda: disconnected["v"],
+                effort=ctx.get("effort"),
             ):
                 if await request.is_disconnected():
                     disconnected["v"] = True
@@ -646,6 +651,7 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
         "forked": forked,
         "cursor_thread": cursor_thread,
         "workspace": workspace,
+        "effort": providers.normalize_effort(body.effort),
     }
 
 

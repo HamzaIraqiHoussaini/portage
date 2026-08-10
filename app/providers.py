@@ -89,6 +89,59 @@ def provider_connected(settings: Settings) -> bool:
     return bool(settings.foundry_api_key) and "YOUR-RESOURCE" not in settings.foundry_messages_url
 
 
+# UI effort → API effort. "extra_high" → xhigh; "ultracode" → max + larger token room.
+EFFORT_LEVELS = ("none", "low", "medium", "high", "extra_high", "max", "ultracode")
+EFFORT_API = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "extra_high": "xhigh",
+    "max": "max",
+    "ultracode": "max",
+}
+
+
+def normalize_effort(raw: str | None) -> str:
+    value = (raw or "high").strip().lower().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "xhigh": "extra_high",
+        "extra": "extra_high",
+        "extrahigh": "extra_high",
+        "ultra": "ultracode",
+        "off": "none",
+        "disabled": "none",
+    }
+    value = aliases.get(value, value)
+    return value if value in EFFORT_LEVELS else "high"
+
+
+def apply_effort_to_payload(
+    payload: dict[str, Any],
+    *,
+    effort: str | None,
+    settings: Settings,
+) -> dict[str, Any]:
+    """Mutate Foundry/Anthropic Messages payload for effort + adaptive thinking."""
+    level = normalize_effort(effort)
+    if level == "none":
+        payload["thinking"] = {"type": "disabled"}
+        payload.pop("output_config", None)
+        return payload
+
+    api_effort = EFFORT_API[level]
+    payload["thinking"] = {"type": "adaptive"}
+    payload["output_config"] = {"effort": api_effort}
+
+    base = int(payload.get("max_tokens") or settings.foundry_max_tokens or 8192)
+    if level == "ultracode":
+        payload["max_tokens"] = max(base, 65536)
+    elif level in ("extra_high", "max"):
+        payload["max_tokens"] = max(base, 32000)
+    elif level == "high":
+        payload["max_tokens"] = max(base, 16384)
+    return payload
+
+
 def _foundry_headers(settings: Settings) -> dict[str, str]:
     return {
         "Content-Type": "application/json",
@@ -116,6 +169,7 @@ async def _foundry_chat(
     system: str,
     settings: Settings,
     max_tokens: int | None = None,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     from .security import normalize_usage, sanitize_provider_error, validate_foundry_url
 
@@ -134,6 +188,7 @@ async def _foundry_chat(
         "system": system,
         "messages": messages,
     }
+    apply_effort_to_payload(payload, effort=effort, settings=settings)
     async with httpx.AsyncClient(timeout=300.0, follow_redirects=False) as client:
         resp = await client.post(
             url,
@@ -161,6 +216,7 @@ async def _foundry_chat_stream(
     system: str,
     settings: Settings,
     max_tokens: int | None = None,
+    effort: str | None = None,
 ):
     """Yield dict events: delta {text}, then done {text, usage, model, provider}."""
     from .security import normalize_usage, sanitize_provider_error, validate_foundry_url
@@ -181,6 +237,7 @@ async def _foundry_chat_stream(
         "messages": messages,
         "stream": True,
     }
+    apply_effort_to_payload(payload, effort=effort, settings=settings)
     parts: list[str] = []
     usage_acc: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
@@ -393,6 +450,7 @@ async def chat_completion(
     system: str,
     settings: Settings | None = None,
     max_tokens: int | None = None,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     s = settings or get_settings()
     if s.provider == "aws":
@@ -401,7 +459,9 @@ async def chat_completion(
         return await asyncio.to_thread(
             _aws_chat_sync, messages, system=system, settings=s, max_tokens=max_tokens
         )
-    return await _foundry_chat(messages, system=system, settings=s, max_tokens=max_tokens)
+    return await _foundry_chat(
+        messages, system=system, settings=s, max_tokens=max_tokens, effort=effort
+    )
 
 
 async def chat_completion_with_tools(
@@ -411,6 +471,7 @@ async def chat_completion_with_tools(
     settings: Settings | None = None,
     tools: list[dict[str, Any]] | None = None,
     max_tokens: int | None = None,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     """One model step that may return tool_use content blocks (Anthropic-shaped)."""
     s = settings or get_settings()
@@ -427,7 +488,12 @@ async def chat_completion_with_tools(
             max_tokens=max_tokens,
         )
     return await _foundry_chat_with_tools(
-        messages, system=system, settings=s, tools=tool_defs, max_tokens=max_tokens
+        messages,
+        system=system,
+        settings=s,
+        tools=tool_defs,
+        max_tokens=max_tokens,
+        effort=effort,
     )
 
 
@@ -438,6 +504,7 @@ async def _foundry_chat_with_tools(
     settings: Settings,
     tools: list[dict[str, Any]],
     max_tokens: int | None = None,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     from .security import normalize_usage, sanitize_provider_error, validate_foundry_url
 
@@ -456,6 +523,7 @@ async def _foundry_chat_with_tools(
     }
     if tools:
         payload["tools"] = tools
+    apply_effort_to_payload(payload, effort=effort, settings=settings)
     async with httpx.AsyncClient(timeout=300.0, follow_redirects=False) as client:
         resp = await client.post(url, headers=_foundry_headers(settings), json=payload)
     if resp.status_code >= 400:
@@ -594,6 +662,7 @@ async def stream_chat_completion(
     system: str,
     settings: Settings | None = None,
     max_tokens: int | None = None,
+    effort: str | None = None,
 ):
     """Async generator of stream events (delta / done)."""
     s = settings or get_settings()
@@ -638,7 +707,7 @@ async def stream_chat_completion(
         return
 
     async for event in _foundry_chat_stream(
-        messages, system=system, settings=s, max_tokens=max_tokens
+        messages, system=system, settings=s, max_tokens=max_tokens, effort=effort
     ):
         yield event
 
@@ -650,6 +719,7 @@ async def test_connection(settings: Settings | None = None) -> dict[str, Any]:
         system="You are a connection probe. Reply with exactly: ok",
         settings=s,
         max_tokens=32,
+        effort="none",
     )
     return {
         "ok": True,

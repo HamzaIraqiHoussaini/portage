@@ -186,11 +186,25 @@
         <form id="composer" class="composer">
           <div class="composer-meta">
             <label class="composer-hint" id="composer-hint" for="message-input">Select a chat or start a new one</label>
-            <span class="session-chip" id="token-session" title="Session tokens" tabindex="0" hidden>
-              <span class="session-label">Session</span>
-              <span class="session-value" id="token-session-value">0</span>
-              <span class="token-tip" id="token-session-tip" aria-hidden="true"></span>
-            </span>
+            <div class="composer-meta-right">
+              <label class="effort-wrap" title="Model effort / thinking depth">
+                <span class="effort-label">Effort</span>
+                <select id="effort-select" class="effort-select" aria-label="Effort level">
+                  <option value="none">None</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high" selected>High</option>
+                  <option value="extra_high">Extra high</option>
+                  <option value="max">Max</option>
+                  <option value="ultracode">Ultracode</option>
+                </select>
+              </label>
+              <span class="session-chip" id="token-session" title="Session tokens" tabindex="0" hidden>
+                <span class="session-label">Session</span>
+                <span class="session-value" id="token-session-value">0</span>
+                <span class="token-tip" id="token-session-tip" aria-hidden="true"></span>
+              </span>
+            </div>
           </div>
           <div class="composer-shell">
             <div class="composer-input-wrap">

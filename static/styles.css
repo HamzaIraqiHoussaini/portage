@@ -1187,6 +1187,51 @@ select:focus {
   min-width: 0;
 }
 
+.composer-meta-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.effort-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+}
+
+.effort-label {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 500;
+  font-size: 0.62rem;
+}
+
+.effort-select {
+  appearance: none;
+  border: 1px solid var(--line);
+  background-color: var(--surface);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 4px 28px 4px 10px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-soft) 50%),
+    linear-gradient(135deg, var(--ink-soft) 50%, transparent 50%);
+  background-position: calc(100% - 14px) calc(50% - 2px), calc(100% - 9px) calc(50% - 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.effort-select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  outline-offset: 1px;
+}
+
 .composer-meta .composer-hint {
   margin: 0;
   min-width: 0;

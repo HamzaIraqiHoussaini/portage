@@ -20,6 +20,7 @@ async def run_agent_stream(
     workspace: str | None = None,
     chat_id: str | None = None,
     cancel_check=None,
+    effort: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """
     Yield events:
@@ -28,7 +29,10 @@ async def run_agent_stream(
     """
     if not workspace:
         async for event in providers.stream_chat_completion(
-            _as_text_messages(messages), system=system, settings=settings
+            _as_text_messages(messages),
+            system=system,
+            settings=settings,
+            effort=effort,
         ):
             if cancel_check and cancel_check():
                 return
@@ -54,6 +58,7 @@ async def run_agent_stream(
                 system=system,
                 settings=settings,
                 tools=agent_tools.anthropic_tools_payload(),
+                effort=effort,
             )
         except ProviderError as e:
             yield {"type": "error", "detail": str(e)}
@@ -81,6 +86,10 @@ async def run_agent_stream(
                     text_parts.append(t)
                     blocks.append({"type": "text", "text": t})
                     yield {"type": "delta", "text": t}
+            elif btype in ("thinking", "reasoning"):
+                think = str(block.get("thinking") or block.get("text") or "")
+                if think.strip():
+                    blocks.append({"type": "thinking", "text": think})
             elif btype == "tool_use":
                 tool_uses.append(block)
                 blocks.append(
