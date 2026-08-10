@@ -57,6 +57,23 @@ class ChatBody(BaseModel):
     effort: str | None = None
     mode: str | None = None
     thinking_mode: str | None = None
+    # Conversation mechanics (local chats)
+    edit_index: int | None = None  # edit user msg at index, truncate after, resubmit
+    regenerate: bool = False  # drop last assistant, resubmit last user
+    user_already_saved: bool = False  # don't re-append user on persist
+
+
+class TruncateBody(BaseModel):
+    keep_until: int
+
+
+class EditMessageBody(BaseModel):
+    index: int
+    text: str = Field(min_length=1)
+
+
+class ForkChatBody(BaseModel):
+    up_to_index: int | None = None
 
 
 class WorkspaceBody(BaseModel):
@@ -302,6 +319,69 @@ async def delete_workspace(path: str):
         raise HTTPException(status_code=400, detail="path query param required")
     workspaces.remove_workspace(path, _settings())
     return {"workspaces": workspaces.list_workspaces(_settings())}
+
+
+@app.post("/api/chats/{chat_id}/truncate")
+async def truncate_chat(chat_id: str, body: TruncateBody):
+    """Rewind conversation: keep messages through keep_until, drop the rest."""
+    s = _settings()
+    try:
+        workspaces.validate_chat_id(chat_id)
+        chat = workspaces.truncate_local_chat(chat_id, keep_until=body.keep_until, settings=s)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return chat.to_dict()
+
+
+@app.post("/api/chats/{chat_id}/edit")
+async def edit_chat_message(chat_id: str, body: EditMessageBody):
+    """Edit a user message and drop everything after it (ChatGPT/Cursor-style)."""
+    s = _settings()
+    try:
+        workspaces.validate_chat_id(chat_id)
+        chat = workspaces.edit_local_user_message(
+            chat_id, index=body.index, text=body.text, settings=s
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return chat.to_dict()
+
+
+@app.post("/api/chats/{chat_id}/fork")
+async def fork_chat(chat_id: str, body: ForkChatBody):
+    """Fork a local chat into a new thread up to a message index."""
+    s = _settings()
+    try:
+        workspaces.validate_chat_id(chat_id)
+        local = workspaces.load_local_chat(chat_id, s)
+        if not local:
+            # Materialize external chat into local first when possible.
+            transcript = None
+            thread = None
+            if s.cursor_link_enabled and workspaces.cursor_detection(s)["detected"]:
+                thread = chats.load_thread(chat_id, s)
+            if (
+                not thread
+                and getattr(s, "claude_code_link_enabled", True)
+                and importers.claude_code_detection(s)["detected"]
+            ):
+                thread = importers.load_claude_thread(chat_id, s)
+            if not thread:
+                raise FileNotFoundError(f"Chat not found: {chat_id}")
+            local = importers.fork_thread_to_local(thread, settings=s)
+            chat_id = local.id
+        forked = workspaces.fork_local_chat(
+            chat_id, up_to_index=body.up_to_index, settings=s
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return forked.to_dict()
 
 
 @app.get("/api/chats")
@@ -588,6 +668,55 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
     cursor_thread = None
     chat_id = body.chat_id
     transcript = _safe_transcript_path(body.transcript_path, s)
+    user_already_saved = bool(body.user_already_saved or body.regenerate or body.edit_index is not None)
+
+    # Edit / regenerate require a mutable local chat.
+    if (body.edit_index is not None or body.regenerate) and not local:
+        # Fork external transcript to local first.
+        cursor_thread = None
+        claude_thread = None
+        if s.cursor_link_enabled and workspaces.cursor_detection(s)["detected"]:
+            cursor_thread = chats.load_thread(body.chat_id, s, transcript_path=transcript)
+        if (
+            not cursor_thread
+            and getattr(s, "claude_code_link_enabled", True)
+            and importers.claude_code_detection(s)["detected"]
+        ):
+            claude_thread = importers.load_claude_thread(
+                body.chat_id, s, transcript_path=transcript
+            )
+        thread = cursor_thread or claude_thread
+        if not thread:
+            raise HTTPException(status_code=404, detail="Chat not found")
+        local = importers.fork_thread_to_local(thread, settings=s)
+        chat_id = local.id
+        source = "local"
+        forked = True
+        cursor_thread = None
+
+    if local and body.edit_index is not None:
+        try:
+            local = workspaces.edit_local_user_message(
+                local.id, index=int(body.edit_index), text=display_message, settings=s
+            )
+            chat_id = local.id
+            source = "local"
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+    elif local and body.regenerate:
+        try:
+            local, last_user = workspaces.drop_last_assistant(local.id, settings=s)
+            chat_id = local.id
+            source = "local"
+            display_message = last_user
+            skill_name, user_message = skills.parse_slash_command(display_message)
+            model_message = user_message if skill_name else display_message
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
 
     if local:
         source = "local"
@@ -596,6 +725,10 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
             for m in local.messages
             if m.role in ("user", "assistant") and m.text.strip()
         ]
+        # After edit/regenerate the user message is already the last history item.
+        skip_append_user = bool(
+            user_already_saved and history and history[-1]["role"] == "user"
+        )
         try:
             workspace = workspaces.resolve_allowed_workspace(
                 body.workspace or local.workspace,
@@ -605,6 +738,7 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
     else:
+        skip_append_user = False
         cursor_thread = None
         claude_thread = None
         if s.cursor_link_enabled and workspaces.cursor_detection(s)["detected"]:
@@ -651,7 +785,12 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
 
     history = history[-MAX_HISTORY_MESSAGES:]
     model_for_llm = agent_tools.expand_mentions(model_message, workspace)
-    history.append({"role": "user", "content": model_for_llm})
+    if not skip_append_user:
+        history.append({"role": "user", "content": model_for_llm})
+    else:
+        # Ensure mentions expansion on the saved last user turn.
+        if history and history[-1]["role"] == "user":
+            history[-1]["content"] = model_for_llm
     merged: list[dict[str, str]] = []
     for item in history:
         if merged and merged[-1]["role"] == item["role"]:
@@ -705,6 +844,7 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
         "effort": providers.normalize_effort(body.effort),
         "thinking_mode": providers.normalize_thinking_mode(body.thinking_mode),
         "mode": mode,
+        "user_already_saved": user_already_saved,
     }
 
 
@@ -727,16 +867,27 @@ def _finalize_chat(
     usage = usage if isinstance(usage, dict) else {}
 
     if source == "local":
-        workspaces.append_local_exchange(
-            chat_id,
-            user_text=ctx["display_message"],
-            assistant_text=assistant_text,
-            settings=s,
-            usage=usage,
-            blocks=blocks,
-            file_changes=file_changes,
-            checkpoint_id=checkpoint_id,
-        )
+        if ctx.get("user_already_saved"):
+            workspaces.append_local_assistant(
+                chat_id,
+                assistant_text=assistant_text,
+                settings=s,
+                usage=usage,
+                blocks=blocks,
+                file_changes=file_changes,
+                checkpoint_id=checkpoint_id,
+            )
+        else:
+            workspaces.append_local_exchange(
+                chat_id,
+                user_text=ctx["display_message"],
+                assistant_text=assistant_text,
+                settings=s,
+                usage=usage,
+                blocks=blocks,
+                file_changes=file_changes,
+                checkpoint_id=checkpoint_id,
+            )
         local_after = workspaces.load_local_chat(chat_id, s)
         usage_total = (local_after.usage_total if local_after else {}) or {}
     elif body.writeback and s.writeback_enabled and cursor_thread:

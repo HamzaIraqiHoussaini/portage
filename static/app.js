@@ -27,6 +27,8 @@ const state = {
   mode: loadMode(),
   thinkingMode: loadThinkingMode(),
   supportsExtendedThinking: true,
+  messages: [],
+  promptCursor: -1,
 };
 
 function loadEffort() {
@@ -279,7 +281,7 @@ function setComposerEnabled(enabled, { connected = state.connected } = {}) {
     $("composer-hint").textContent = "Connect a provider in Settings to send";
   } else {
     $("composer-hint").textContent =
-      "Enter to send · / skills · @ files · Esc stops · Shift+Enter newline";
+      "Enter to send · Edit/Regenerate on bubbles · ⌥↑ prompts · Esc stops";
   }
 }
 
@@ -796,12 +798,16 @@ function createBubble(role, text, usage = null, extras = {}) {
   const blocks = extras.blocks || null;
   const fileChanges = extras.file_changes || null;
   const checkpointId = extras.checkpoint_id || null;
+  const index = typeof extras.index === "number" ? extras.index : null;
+  const isLast = !!extras.isLast;
   const { text: cleaned, tools } = extractTools(text);
   const hasRich = (blocks && blocks.length) || (fileChanges && fileChanges.length);
   if (!cleaned && tools.length === 0 && !hasRich && role !== "assistant") return null;
   const div = document.createElement("article");
   div.className = `bubble ${role === "error" ? "error" : role}`;
   if (!cleaned && (tools.length || hasRich)) div.classList.add("tools-only");
+  if (index != null) div.dataset.index = String(index);
+  div.dataset.role = role;
   const roleEl = document.createElement("span");
   roleEl.className = "role";
   roleEl.textContent = role;
@@ -825,7 +831,205 @@ function createBubble(role, text, usage = null, extras = {}) {
   if (role === "assistant" && usage && usageTotal(usage) > 0) {
     div.appendChild(createUsageBadge(usage));
   }
+  if (role === "user" || role === "assistant") {
+    div.appendChild(
+      createMessageActions({
+        role,
+        text: cleaned || text || "",
+        index,
+        isLast,
+        rawText: text || "",
+      })
+    );
+  }
   return div;
+}
+
+function createMessageActions({ role, text, index, isLast, rawText }) {
+  const bar = document.createElement("div");
+  bar.className = "msg-actions";
+  const addBtn = (label, title, onClick) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ghost tiny msg-action";
+    btn.textContent = label;
+    btn.title = title;
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onClick();
+    });
+    bar.appendChild(btn);
+  };
+  addBtn("Copy", "Copy message", async () => {
+    try {
+      await navigator.clipboard.writeText(String(rawText || text || ""));
+    } catch {
+      /* ignore */
+    }
+  });
+  if (role === "user" && index != null) {
+    addBtn("Edit", "Edit and resubmit from here", () => beginEditMessage(index));
+  }
+  if (role === "assistant" && isLast) {
+    addBtn("Regenerate", "Regenerate this reply", () => regenerateLast().catch(showErr));
+  }
+  if (index != null) {
+    addBtn("Fork", "Fork chat from this message", () => forkFromIndex(index).catch(showErr));
+    if (role === "user" || role === "assistant") {
+      addBtn("Rewind", "Remove everything after this message", () =>
+        rewindToIndex(index).catch(showErr)
+      );
+    }
+  }
+  return bar;
+}
+
+function showErr(err) {
+  const note = $("sync-note");
+  if (note) {
+    note.hidden = false;
+    note.textContent = String(err.message || err);
+  }
+}
+
+function beginEditMessage(index) {
+  if (state.streaming) return;
+  const msgs = state.messages || [];
+  const msg = msgs[index];
+  if (!msg || msg.role !== "user") return;
+  const later = msgs.slice(index + 1);
+  const hasChanges = later.some(
+    (m) => (m.file_changes && m.file_changes.length) || m.checkpoint_id
+  );
+  if (later.length) {
+    const warn = hasChanges
+      ? `Edit this message and discard ${later.length} later turn(s)?\n\nLater file changes in chat history will be dropped from the conversation (workspace files stay as-is unless you restore a checkpoint).`
+      : `Edit this message and discard ${later.length} later turn(s)?`;
+    if (!window.confirm(warn)) return;
+  }
+  const bubble = document.querySelector(`.bubble[data-index="${index}"]`);
+  if (!bubble) return;
+  const body = bubble.querySelector(".bubble-body");
+  const actions = bubble.querySelector(".msg-actions");
+  if (!body) return;
+  const original = String(msg.text || "");
+  const ta = document.createElement("textarea");
+  ta.className = "edit-area";
+  ta.value = original;
+  ta.rows = Math.min(12, Math.max(3, original.split("\n").length + 1));
+  body.replaceWith(ta);
+  if (actions) actions.hidden = true;
+  const editBar = document.createElement("div");
+  editBar.className = "edit-actions";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "send-island tiny-action";
+  save.textContent = "Save & submit";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "ghost tiny";
+  cancel.textContent = "Cancel";
+  editBar.appendChild(save);
+  editBar.appendChild(cancel);
+  bubble.appendChild(editBar);
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+  cancel.addEventListener("click", () => {
+    renderMessages(state.messages);
+  });
+  save.addEventListener("click", () => {
+    const next = ta.value.trim();
+    if (!next) return;
+    submitEditedMessage(index, next).catch(showErr);
+  });
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      renderMessages(state.messages);
+    } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      const next = ta.value.trim();
+      if (next) submitEditedMessage(index, next).catch(showErr);
+    }
+  });
+}
+
+async function submitEditedMessage(index, text) {
+  if (!state.chatId || state.streaming) return;
+  await sendMessageStream(text, { editIndex: index });
+}
+
+async function regenerateLast() {
+  if (!state.chatId || state.streaming) return;
+  const msgs = state.messages || [];
+  if (!msgs.length || msgs[msgs.length - 1].role !== "assistant") {
+    throw new Error("Nothing to regenerate");
+  }
+  const lastUser = [...msgs].reverse().find((m) => m.role === "user");
+  if (!lastUser) throw new Error("No user message to regenerate from");
+  await sendMessageStream(lastUser.text || "", { regenerate: true });
+}
+
+async function forkFromIndex(index) {
+  if (!state.chatId) return;
+  const data = await api(`/api/chats/${encodeURIComponent(state.chatId)}/fork`, {
+    method: "POST",
+    body: JSON.stringify({ up_to_index: index }),
+  });
+  await loadChats();
+  await openChat(data.id, "local", null);
+  const note = $("sync-note");
+  if (note) {
+    note.hidden = false;
+    note.textContent = "Forked into a new conversation from that message.";
+  }
+}
+
+async function rewindToIndex(index) {
+  if (!state.chatId || state.streaming) return;
+  if (state.chatSource && state.chatSource !== "local") {
+    const ok = window.confirm(
+      "Rewind works on a local copy. Continue? (External transcripts stay unchanged.)"
+    );
+    if (!ok) return;
+    // Fork first then truncate the fork.
+    const forked = await api(`/api/chats/${encodeURIComponent(state.chatId)}/fork`, {
+      method: "POST",
+      body: JSON.stringify({ up_to_index: index }),
+    });
+    await loadChats();
+    await openChat(forked.id, "local", null);
+    return;
+  }
+  const msgs = state.messages || [];
+  const later = msgs.length - index - 1;
+  if (later <= 0) return;
+  if (!window.confirm(`Remove ${later} message(s) after this point?`)) return;
+  const data = await api(`/api/chats/${encodeURIComponent(state.chatId)}/truncate`, {
+    method: "POST",
+    body: JSON.stringify({ keep_until: index }),
+  });
+  state.messages = data.messages || [];
+  renderMessages(state.messages);
+  await loadChats();
+}
+
+function userPrompts() {
+  return (state.messages || [])
+    .filter((m) => m.role === "user" && String(m.text || "").trim())
+    .map((m) => String(m.text || ""));
+}
+
+function cyclePreviousPrompt(dir) {
+  const prompts = userPrompts();
+  if (!prompts.length) return;
+  const input = $("message-input");
+  if (!input) return;
+  if (state.promptCursor < 0) state.promptCursor = prompts.length;
+  state.promptCursor = Math.max(0, Math.min(prompts.length - 1, state.promptCursor + dir));
+  input.value = prompts[state.promptCursor];
+  input.focus();
 }
 
 function createUsageBadge(usage) {
@@ -1496,21 +1700,27 @@ async function openChat(id, sourceHint, transcriptPath) {
 function renderMessages(messages) {
   const root = $("messages");
   root.innerHTML = "";
-  if (!messages.length) {
+  state.messages = Array.isArray(messages) ? messages : [];
+  state.promptCursor = -1;
+  if (!state.messages.length) {
     root.innerHTML = `<p class="empty">Start typing — use / for skills or @ for files.</p>`;
     return;
   }
-  for (const m of messages) {
+  const lastIdx = state.messages.length - 1;
+  state.messages.forEach((m, idx) => {
     const hasBlocks = m.blocks && m.blocks.length;
     const hasChanges = m.file_changes && m.file_changes.length;
-    if ((!m.text || !String(m.text).trim()) && !hasBlocks && !hasChanges) continue;
+    if ((!m.text || !String(m.text).trim()) && !hasBlocks && !hasChanges) return;
+    const index = typeof m.index === "number" ? m.index : idx;
     const bubble = createBubble(m.role, m.text || "", m.usage || null, {
       blocks: m.blocks || null,
       file_changes: m.file_changes || null,
       checkpoint_id: m.checkpoint_id || null,
+      index,
+      isLast: index === lastIdx || idx === lastIdx,
     });
     if (bubble) root.appendChild(bubble);
-  }
+  });
   root.scrollTop = root.scrollHeight;
 }
 
@@ -1523,18 +1733,50 @@ function stopStreaming() {
 
 async function sendMessage(event) {
   event.preventDefault();
-  if (!state.chatId || state.streaming) return;
   const input = $("message-input");
   const text = input.value.trim();
   if (!text) return;
+  input.value = "";
+  state.promptCursor = -1;
+  await sendMessageStream(text, {});
+}
+
+async function sendMessageStream(text, opts = {}) {
+  if (!state.chatId || state.streaming) return;
   hideSlashMenu();
   hideMentionMenu();
 
   const root = $("messages");
+  const input = $("message-input");
   if (root.querySelector(".empty") || root.querySelector(".empty-stage")) root.innerHTML = "";
-  const userBubble = createBubble("user", text);
-  if (userBubble) root.appendChild(userBubble);
-  input.value = "";
+
+  if (opts.editIndex != null) {
+    // Drop bubbles after the edited user message and refresh that bubble text.
+    [...root.querySelectorAll(".bubble")].forEach((el) => {
+      const idx = Number(el.dataset.index);
+      if (!Number.isNaN(idx) && idx > opts.editIndex) el.remove();
+    });
+    const target = root.querySelector(`.bubble[data-index="${opts.editIndex}"]`);
+    if (target) {
+      target.querySelector(".edit-actions")?.remove();
+      target.querySelector(".edit-area")?.remove();
+      let body = target.querySelector(".bubble-body");
+      if (!body) {
+        body = document.createElement("div");
+        body.className = "bubble-body";
+        target.insertBefore(body, target.querySelector(".msg-actions"));
+      }
+      body.innerHTML = formatMessageHtml(text);
+      const actions = target.querySelector(".msg-actions");
+      if (actions) actions.hidden = false;
+    }
+  } else if (opts.regenerate) {
+    const last = [...root.querySelectorAll(".bubble")].pop();
+    if (last && last.dataset.role === "assistant") last.remove();
+  } else {
+    const userBubble = createBubble("user", text);
+    if (userBubble) root.appendChild(userBubble);
+  }
   scrollMessages(root, { force: true });
 
   const streamUi = createStreamingBubble();
@@ -1549,7 +1791,7 @@ async function sendMessage(event) {
   const streamChatId = state.chatId;
   state.streamChatId = streamChatId;
   setStreamingUi(true);
-  input.disabled = true;
+  if (input) input.disabled = true;
   const messagesEl = $("messages");
   if (messagesEl) messagesEl.setAttribute("aria-busy", "true");
 
@@ -1565,23 +1807,29 @@ async function sendMessage(event) {
   };
 
   let aborted = false;
+  let refreshAfter = false;
   try {
+    const payload = {
+      chat_id: state.chatId,
+      message: text,
+      writeback: $("writeback-toggle").checked,
+      source: state.chatSource,
+      workspace: $("workspace-select").value || null,
+      transcript_path: state.transcriptPath,
+      effort: state.effort || $("effort-select")?.value || "high",
+      mode: state.mode || $("mode-select")?.value || "agent",
+      thinking_mode: state.supportsExtendedThinking
+        ? state.thinkingMode || $("thinking-select")?.value || "adaptive"
+        : "adaptive",
+    };
+    if (opts.editIndex != null) payload.edit_index = opts.editIndex;
+    if (opts.regenerate) payload.regenerate = true;
+    if (opts.editIndex != null || opts.regenerate) payload.user_already_saved = true;
+
     const resp = await fetch("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: state.chatId,
-        message: text,
-        writeback: $("writeback-toggle").checked,
-        source: state.chatSource,
-        workspace: $("workspace-select").value || null,
-        transcript_path: state.transcriptPath,
-        effort: state.effort || $("effort-select")?.value || "high",
-        mode: state.mode || $("mode-select")?.value || "agent",
-        thinking_mode: state.supportsExtendedThinking
-          ? state.thinkingMode || $("thinking-select")?.value || "adaptive"
-          : "adaptive",
-      }),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     });
     if (!resp.ok) {
@@ -1705,6 +1953,7 @@ async function sendMessage(event) {
       scrollMessages(root);
       await loadChats();
       refreshCheckpointMenu().catch(() => {});
+      refreshAfter = true;
     } else {
       const partial = assembled.trim();
       if (partial || liveFileChanges.length) {
@@ -1758,7 +2007,14 @@ async function sendMessage(event) {
     state.streamChatId = null;
     setStreamingUi(false);
     if (messagesEl) messagesEl.removeAttribute("aria-busy");
-    if (!aborted || state.chatId === streamChatId) input.focus();
+    if (!aborted || state.chatId === streamChatId) input?.focus();
+    if (refreshAfter && state.chatId) {
+      try {
+        await openChat(state.chatId, state.chatSource, state.transcriptPath);
+      } catch {
+        /* keep streamed paint */
+      }
+    }
   }
 }
 
@@ -2006,6 +2262,16 @@ on("message-input", "input", () => {
 on("message-input", "keydown", (event) => {
   const mentionMenu = $("mention-menu");
   const mentionOpen = mentionMenu && !mentionMenu.hidden;
+  if (!mentionOpen && event.altKey && event.key === "ArrowUp") {
+    event.preventDefault();
+    cyclePreviousPrompt(-1);
+    return;
+  }
+  if (!mentionOpen && event.altKey && event.key === "ArrowDown") {
+    event.preventDefault();
+    cyclePreviousPrompt(1);
+    return;
+  }
   if (mentionOpen) {
     const items = [...mentionMenu.querySelectorAll(".slash-item")];
     if (items.length) {

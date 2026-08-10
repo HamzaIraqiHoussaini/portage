@@ -61,8 +61,8 @@ class LocalChat:
 
     def to_dict(self) -> dict[str, Any]:
         msgs: list[dict[str, Any]] = []
-        for m in self.messages:
-            item: dict[str, Any] = {"role": m.role, "text": m.text}
+        for idx, m in enumerate(self.messages):
+            item: dict[str, Any] = {"role": m.role, "text": m.text, "index": idx}
             if m.usage:
                 item["usage"] = dict(m.usage)
             if m.blocks:
@@ -285,6 +285,163 @@ def append_local_exchange(
         for key in ("input_tokens", "output_tokens", "total_tokens"):
             total[key] = int(total.get(key) or 0) + int(assistant_usage.get(key) or 0)
         chat.usage_total = total
+    _save(chat, s)
+    return chat
+
+
+def truncate_local_chat(
+    chat_id: str,
+    *,
+    keep_until: int,
+    settings: Settings | None = None,
+) -> LocalChat:
+    """Keep messages[0..keep_until] inclusive; drop everything after."""
+    s = settings or get_settings()
+    chat = load_local_chat(chat_id, s)
+    if not chat:
+        raise FileNotFoundError(f"Local chat not found: {chat_id}")
+    if keep_until < -1 or keep_until >= len(chat.messages):
+        raise ValueError("keep_until out of range")
+    chat.messages = chat.messages[: keep_until + 1]
+    chat.updated_at = int(time.time() * 1000)
+    _save(chat, s)
+    return chat
+
+
+def edit_local_user_message(
+    chat_id: str,
+    *,
+    index: int,
+    text: str,
+    settings: Settings | None = None,
+) -> LocalChat:
+    """Replace a user message and drop all messages after it (edit & resubmit)."""
+    s = settings or get_settings()
+    chat = load_local_chat(chat_id, s)
+    if not chat:
+        raise FileNotFoundError(f"Local chat not found: {chat_id}")
+    if index < 0 or index >= len(chat.messages):
+        raise ValueError("message index out of range")
+    msg = chat.messages[index]
+    if msg.role != "user":
+        raise ValueError("Only user messages can be edited")
+    cleaned = (text or "").strip()
+    if not cleaned:
+        raise ValueError("Edited message cannot be empty")
+    msg.text = cleaned
+    chat.messages = chat.messages[: index + 1]
+    chat.updated_at = int(time.time() * 1000)
+    if chat.title in ("New conversation", chat.id) and cleaned:
+        line = cleaned.splitlines()[0]
+        chat.title = line[:80] + ("…" if len(line) > 80 else "")
+    _save(chat, s)
+    return chat
+
+
+def drop_last_assistant(
+    chat_id: str,
+    *,
+    settings: Settings | None = None,
+) -> tuple[LocalChat, str]:
+    """Remove the trailing assistant message for regenerate. Returns (chat, last_user_text)."""
+    s = settings or get_settings()
+    chat = load_local_chat(chat_id, s)
+    if not chat:
+        raise FileNotFoundError(f"Local chat not found: {chat_id}")
+    if not chat.messages or chat.messages[-1].role != "assistant":
+        raise ValueError("Last message is not an assistant reply to regenerate")
+    chat.messages.pop()
+    if not chat.messages or chat.messages[-1].role != "user":
+        raise ValueError("No user message found before the assistant reply")
+    user_text = chat.messages[-1].text
+    chat.updated_at = int(time.time() * 1000)
+    _save(chat, s)
+    return chat, user_text
+
+
+def append_local_assistant(
+    chat_id: str,
+    *,
+    assistant_text: str,
+    settings: Settings | None = None,
+    usage: dict[str, int] | None = None,
+    blocks: list[dict[str, Any]] | None = None,
+    file_changes: list[dict[str, Any]] | None = None,
+    checkpoint_id: str | None = None,
+) -> LocalChat:
+    """Append only an assistant message (after edit/regenerate where user already exists)."""
+    s = settings or get_settings()
+    chat = load_local_chat(chat_id, s)
+    if not chat:
+        raise FileNotFoundError(f"Local chat not found: {chat_id}")
+    assistant_usage = None
+    if usage:
+        assistant_usage = {
+            "input_tokens": int(usage.get("input_tokens") or 0),
+            "output_tokens": int(usage.get("output_tokens") or 0),
+            "total_tokens": int(usage.get("total_tokens") or 0),
+        }
+    chat.messages.append(
+        LocalMessage(
+            role="assistant",
+            text=assistant_text,
+            usage=assistant_usage,
+            blocks=list(blocks) if blocks else None,
+            file_changes=list(file_changes) if file_changes else None,
+            checkpoint_id=checkpoint_id,
+        )
+    )
+    chat.updated_at = int(time.time() * 1000)
+    if assistant_usage:
+        chat.usage_last = dict(assistant_usage)
+        total = dict(chat.usage_total or {})
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            total[key] = int(total.get(key) or 0) + int(assistant_usage.get(key) or 0)
+        chat.usage_total = total
+    _save(chat, s)
+    return chat
+
+
+def fork_local_chat(
+    chat_id: str,
+    *,
+    up_to_index: int | None = None,
+    settings: Settings | None = None,
+) -> LocalChat:
+    """Create a new local chat copying messages through up_to_index (inclusive)."""
+    s = settings or get_settings()
+    src = load_local_chat(chat_id, s)
+    if not src:
+        raise FileNotFoundError(f"Local chat not found: {chat_id}")
+    end = len(src.messages) - 1 if up_to_index is None else up_to_index
+    if end < -1 or end >= len(src.messages):
+        raise ValueError("up_to_index out of range")
+    now = int(time.time() * 1000)
+    copied = [
+        LocalMessage(
+            role=m.role,
+            text=m.text,
+            usage=dict(m.usage) if m.usage else None,
+            blocks=list(m.blocks) if m.blocks else None,
+            file_changes=list(m.file_changes) if m.file_changes else None,
+            checkpoint_id=None,
+        )
+        for m in src.messages[: end + 1]
+    ]
+    title = src.title
+    if not title.startswith("Fork ·"):
+        title = f"Fork · {title}"[:120]
+    chat = LocalChat(
+        id=str(uuid.uuid4()),
+        title=title,
+        created_at=now,
+        updated_at=now,
+        workspace=src.workspace,
+        source="local",
+        messages=copied,
+        usage_last=dict(src.usage_last or {}),
+        usage_total={},
+    )
     _save(chat, s)
     return chat
 

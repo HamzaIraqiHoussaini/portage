@@ -1458,6 +1458,59 @@ select:focus {
   color: var(--ink-soft);
 }
 
+.msg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.bubble:hover .msg-actions,
+.bubble:focus-within .msg-actions,
+.bubble.editing .msg-actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .msg-actions {
+    opacity: 1;
+  }
+}
+
+.msg-action {
+  font-size: 0.68rem !important;
+  padding: 2px 8px !important;
+}
+
+.edit-area {
+  width: 100%;
+  min-height: 4.5rem;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font: inherit;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  align-items: center;
+}
+
+.tiny-action {
+  height: auto !important;
+  min-height: 2rem;
+  padding: 6px 12px !important;
+  border-radius: 999px !important;
+  font-size: 0.78rem !important;
+}
+
 .bubble.user .role {
   color: var(--accent-ink);
 }
