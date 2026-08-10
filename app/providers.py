@@ -976,27 +976,46 @@ async def stream_chat_completion_with_tools(
         mode=mode or "agent", allow_subagents=allow_subagents
     )
     if s.provider == "aws":
-        # Bedrock tool streaming is not wired; fall back to one-shot then emit result.
-        result = await chat_completion_with_tools(
-            messages,
-            system=system,
-            settings=s,
-            tools=tool_defs,
-            max_tokens=max_tokens,
-            effort=effort,
-            thinking_mode=thinking_mode,
-            mode=mode,
-            allow_subagents=allow_subagents,
-        )
-        yield {
-            "type": "tool_round_done",
-            "text": result.get("text") or "",
-            "content": result.get("content") or [],
-            "stop_reason": result.get("stop_reason"),
-            "model": result.get("model"),
-            "provider": result.get("provider") or "aws",
-            "usage": result.get("usage") or {},
-        }
+        import asyncio
+        import threading
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        sentinel = object()
+        cancel_event = threading.Event()
+
+        def _run() -> None:
+            try:
+                for event in _aws_chat_with_tools_stream_sync(
+                    messages,
+                    system=system,
+                    settings=s,
+                    tools=tool_defs,
+                    max_tokens=max_tokens,
+                    mode=mode or "agent",
+                    allow_subagents=allow_subagents,
+                    cancel_event=cancel_event,
+                ):
+                    if cancel_event.is_set():
+                        break
+                    loop.call_soon_threadsafe(queue.put_nowait, event)
+            except Exception as exc:  # noqa: BLE001
+                if not cancel_event.is_set():
+                    loop.call_soon_threadsafe(queue.put_nowait, exc)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, sentinel)
+
+        threading.Thread(target=_run, daemon=True).start()
+        try:
+            while True:
+                item = await queue.get()
+                if item is sentinel:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+        finally:
+            cancel_event.set()
         return
 
     async for event in _foundry_chat_with_tools_stream(
@@ -1128,6 +1147,205 @@ def _aws_chat_with_tools_sync(
         "model": settings.aws_model_id,
         "provider": "aws",
         "usage": normalize_usage(usage_raw, provider="aws"),
+    }
+
+
+def _aws_finalize_tool_input(raw_json: str, existing: Any = None) -> dict[str, Any]:
+    if isinstance(existing, dict) and existing:
+        return existing
+    text = (raw_json or "").strip()
+    if not text:
+        return existing if isinstance(existing, dict) else {}
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+        return {"value": parsed}
+    except json.JSONDecodeError:
+        return {"_raw": text[:4000]}
+
+
+def _aws_chat_with_tools_stream_sync(
+    messages: list[dict[str, Any]],
+    *,
+    system: str,
+    settings: Settings,
+    tools: list[dict[str, Any]],
+    max_tokens: int | None = None,
+    mode: str = "agent",
+    allow_subagents: bool = True,
+    cancel_event=None,
+):
+    """Stream one Bedrock Converse tool round; yield delta/thinking/status then tool_round_done."""
+    from .security import normalize_usage
+    from . import agent_tools
+
+    if not settings.aws_access_key_id or not settings.aws_secret_access_key:
+        raise ProviderError("AWS access key and secret are required.")
+    if not settings.aws_model_id:
+        raise ProviderError("AWS model id is empty.")
+
+    client = _aws_client(settings)
+    kwargs: dict[str, Any] = {
+        "modelId": settings.aws_model_id,
+        "messages": _aws_normalize_messages(messages),
+        "inferenceConfig": {"maxTokens": max_tokens or settings.foundry_max_tokens},
+    }
+    if system.strip():
+        kwargs["system"] = [{"text": system}]
+    if tools:
+        kwargs["toolConfig"] = agent_tools.bedrock_tool_config(
+            mode=mode, allow_subagents=allow_subagents
+        )
+
+    yield {"type": "status", "phase": "model", "detail": "streaming"}
+
+    try:
+        response = client.converse_stream(**kwargs)
+    except Exception as e:  # noqa: BLE001
+        raise ProviderError(f"AWS Bedrock error: {e}") from e
+
+    stream = response.get("stream")
+    if stream is None:
+        raise ProviderError("AWS Bedrock returned no stream.")
+
+    content_blocks: list[dict[str, Any]] = []
+    block_index: dict[int, dict[str, Any]] = {}
+    json_bufs: dict[int, list[str]] = {}
+    text_parts: list[str] = []
+    usage_acc: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    stop_reason: str | None = None
+
+    try:
+        for event in stream:
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            if "contentBlockStart" in event:
+                start_ev = event["contentBlockStart"] or {}
+                idx = int(start_ev.get("contentBlockIndex") or 0)
+                start = start_ev.get("start") if isinstance(start_ev.get("start"), dict) else {}
+                if "toolUse" in start:
+                    tu = start.get("toolUse") or {}
+                    block_index[idx] = {
+                        "type": "tool_use",
+                        "id": tu.get("toolUseId"),
+                        "name": tu.get("name") or "tool",
+                        "input": {},
+                    }
+                    json_bufs[idx] = []
+                elif "reasoningContent" in start:
+                    block_index[idx] = {"type": "thinking", "thinking": ""}
+                else:
+                    block_index[idx] = {"type": "text", "text": ""}
+            elif "contentBlockDelta" in event:
+                delta_ev = event["contentBlockDelta"] or {}
+                idx = int(delta_ev.get("contentBlockIndex") or 0)
+                delta = delta_ev.get("delta") if isinstance(delta_ev.get("delta"), dict) else {}
+                block = block_index.get(idx)
+                if "text" in delta:
+                    text = str(delta.get("text") or "")
+                    if text:
+                        if not block:
+                            block = {"type": "text", "text": ""}
+                            block_index[idx] = block
+                        text_parts.append(text)
+                        if block.get("type") == "text":
+                            block["text"] = str(block.get("text") or "") + text
+                        yield {"type": "status", "phase": "writing"}
+                        yield {"type": "delta", "text": text}
+                elif "toolUse" in delta:
+                    tu = delta.get("toolUse") or {}
+                    chunk = tu.get("input")
+                    if chunk is None:
+                        continue
+                    if not block:
+                        block = {
+                            "type": "tool_use",
+                            "id": tu.get("toolUseId"),
+                            "name": tu.get("name") or "tool",
+                            "input": {},
+                        }
+                        block_index[idx] = block
+                        json_bufs[idx] = []
+                    if isinstance(chunk, dict):
+                        block["input"] = chunk
+                    else:
+                        json_bufs.setdefault(idx, []).append(str(chunk))
+                elif "reasoningContent" in delta:
+                    rc = delta.get("reasoningContent") or {}
+                    think = str(rc.get("text") or "")
+                    if think:
+                        if not block:
+                            block = {"type": "thinking", "thinking": ""}
+                            block_index[idx] = block
+                        if block.get("type") == "thinking":
+                            block["thinking"] = str(block.get("thinking") or "") + think
+                        yield {"type": "status", "phase": "thinking"}
+                        yield {"type": "thinking", "text": think}
+            elif "contentBlockStop" in event:
+                stop_ev = event["contentBlockStop"] or {}
+                idx = int(stop_ev.get("contentBlockIndex") or 0)
+                block = block_index.pop(idx, None)
+                if not block:
+                    continue
+                if block.get("type") == "tool_use":
+                    block["input"] = _aws_finalize_tool_input(
+                        "".join(json_bufs.pop(idx, [])),
+                        block.get("input"),
+                    )
+                    content_blocks.append(block)
+                elif block.get("type") == "thinking":
+                    if str(block.get("thinking") or "").strip():
+                        content_blocks.append(block)
+                elif block.get("type") == "text":
+                    if str(block.get("text") or ""):
+                        content_blocks.append(block)
+            elif "messageStop" in event:
+                stop = (event.get("messageStop") or {}).get("stopReason")
+                if stop:
+                    stop_reason = str(stop)
+            elif "metadata" in event:
+                meta = event["metadata"] if isinstance(event["metadata"], dict) else {}
+                u = meta.get("usage") if isinstance(meta.get("usage"), dict) else None
+                if isinstance(u, dict):
+                    usage_acc = normalize_usage(u, provider="aws")
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    if cancel_event is not None and cancel_event.is_set():
+        return
+
+    for idx, block in sorted(block_index.items()):
+        if block.get("type") == "tool_use":
+            block["input"] = _aws_finalize_tool_input(
+                "".join(json_bufs.get(idx, [])),
+                block.get("input"),
+            )
+        content_blocks.append(block)
+
+    if not usage_acc.get("total_tokens"):
+        usage_acc["total_tokens"] = usage_acc.get("input_tokens", 0) + usage_acc.get(
+            "output_tokens", 0
+        )
+    has_tools = any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content_blocks)
+    if has_tools or (stop_reason or "") in ("tool_use", "toolUse"):
+        mapped_stop = "tool_use"
+    else:
+        mapped_stop = str(stop_reason or "end_turn")
+
+    yield {
+        "type": "tool_round_done",
+        "text": "".join(text_parts).strip(),
+        "content": content_blocks,
+        "stop_reason": mapped_stop,
+        "model": settings.aws_model_id,
+        "provider": "aws",
+        "usage": usage_acc,
     }
 
 

@@ -30,6 +30,7 @@ const state = {
   messages: [],
   promptCursor: -1,
   attachments: [],
+  branches: {},
 };
 
 function loadEffort() {
@@ -1539,6 +1540,7 @@ async function switchBranch(messageId, variantIndex) {
     body: JSON.stringify({ message_id: messageId, variant_index: variantIndex }),
   });
   state.messages = data.messages || [];
+  state.branches = data.branches || {};
   renderMessages(state.messages);
   await loadChats();
 }
@@ -1620,9 +1622,123 @@ function setOutlineOpen(open) {
   const panel = $("prompt-outline");
   const btn = $("outline-btn");
   if (!panel) return;
+  if (open) setBranchMapOpen(false);
   panel.hidden = !open;
   if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
   if (open) renderPromptOutline();
+}
+
+function branchNodes() {
+  const branches = state.branches || {};
+  const nodes = [];
+  for (const m of state.messages || []) {
+    if (m.role !== "user" || !m.id) continue;
+    const group = branches[m.id];
+    if (!isBranchGroup(group)) continue;
+    const variants = group.variants || [];
+    if (variants.length < 2) continue;
+    nodes.push({
+      messageId: m.id,
+      index: typeof m.index === "number" ? m.index : null,
+      active: intOr(group.active, 0),
+      variants,
+    });
+  }
+  return nodes;
+}
+
+function isBranchGroup(group) {
+  return !!(group && typeof group === "object" && Array.isArray(group.variants));
+}
+
+function intOr(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function previewBranchText(text, limit = 56) {
+  const preview = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, limit);
+  return preview + (preview.length >= limit ? "…" : "");
+}
+
+function renderBranchMap() {
+  const list = $("branch-map-list");
+  const btn = $("branch-btn");
+  const panel = $("branch-map");
+  if (!list) return;
+  list.innerHTML = "";
+  const nodes = branchNodes();
+  if (btn) btn.hidden = !state.chatId || state.chatSource !== "local" || nodes.length === 0;
+  if (panel && (!state.chatId || nodes.length === 0)) {
+    panel.hidden = true;
+    if (btn) btn.setAttribute("aria-expanded", "false");
+  }
+  if (!nodes.length) {
+    const empty = document.createElement("li");
+    empty.className = "branch-map-empty";
+    empty.textContent = "No edit branches yet — edit a prompt to fork the path.";
+    list.appendChild(empty);
+    return;
+  }
+  nodes.forEach((node, ni) => {
+    const group = document.createElement("li");
+    group.className = "branch-map-group";
+    const head = document.createElement("button");
+    head.type = "button";
+    head.className = "prompt-outline-item branch-map-head";
+    const activeText =
+      (node.variants[node.active] && node.variants[node.active].text) ||
+      (state.messages || []).find((m) => m.id === node.messageId)?.text ||
+      "";
+    head.textContent = `Fork ${ni + 1} · ${node.variants.length} paths`;
+    head.title = previewBranchText(activeText, 200);
+    head.addEventListener("click", () => {
+      if (node.index == null) return;
+      const el = document.querySelector(`.bubble[data-index="${node.index}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("flash-target");
+        window.setTimeout(() => el.classList.remove("flash-target"), 1200);
+      }
+    });
+    group.appendChild(head);
+    const variants = document.createElement("ul");
+    variants.className = "branch-map-variants";
+    node.variants.forEach((variant, vi) => {
+      const li = document.createElement("li");
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "prompt-outline-item branch-map-variant";
+      if (vi === node.active) b.classList.add("is-active");
+      const text = typeof variant === "object" ? variant.text : "";
+      const follow = typeof variant === "object" && Array.isArray(variant.following)
+        ? variant.following.length
+        : 0;
+      b.textContent = `${vi + 1}. ${previewBranchText(text) || "(empty)"}`;
+      b.title = `${previewBranchText(text, 240)}${follow ? `\n${follow} following message(s)` : ""}`;
+      b.disabled = state.streaming || vi === node.active;
+      b.addEventListener("click", () => {
+        switchBranch(node.messageId, vi).catch(showErr);
+      });
+      li.appendChild(b);
+      variants.appendChild(li);
+    });
+    group.appendChild(variants);
+    list.appendChild(group);
+  });
+}
+
+function setBranchMapOpen(open) {
+  const panel = $("branch-map");
+  const btn = $("branch-btn");
+  if (!panel) return;
+  if (open) setOutlineOpen(false);
+  panel.hidden = !open;
+  if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) renderBranchMap();
 }
 
 function userPrompts() {
@@ -2296,6 +2412,8 @@ async function openChat(id, sourceHint, transcriptPath) {
     if (thread.workspace) $("workspace-select").value = thread.workspace;
     setComposerEnabled(true);
     setOutlineOpen(false);
+    setBranchMapOpen(false);
+    state.branches = thread.branches || {};
     renderMessages(thread.messages || []);
     showChatView(true);
     updateEmptyStage();
@@ -2352,6 +2470,7 @@ function renderMessages(messages) {
   });
   root.scrollTop = root.scrollHeight;
   renderPromptOutline();
+  renderBranchMap();
 }
 
 function stopStreaming() {
@@ -2597,6 +2716,19 @@ async function sendMessageStream(text, opts = {}) {
       scrollMessages(root);
       await loadChats();
       refreshCheckpointMenu().catch(() => {});
+      if (state.chatSource === "local" && state.chatId) {
+        try {
+          const thread = await api(`/api/chats/${encodeURIComponent(state.chatId)}`);
+          state.branches = thread.branches || {};
+          if (opts.editIndex != null) {
+            renderMessages(thread.messages || []);
+          } else {
+            renderBranchMap();
+          }
+        } catch {
+          /* ignore */
+        }
+      }
       refreshAfter = true;
     } else {
       const partial = assembled.trim();
@@ -2923,6 +3055,11 @@ on("outline-btn", "click", () => {
   setOutlineOpen(!!panel?.hidden);
 });
 on("outline-close", "click", () => setOutlineOpen(false));
+on("branch-btn", "click", () => {
+  const panel = $("branch-map");
+  setBranchMapOpen(!!panel?.hidden);
+});
+on("branch-close", "click", () => setBranchMapOpen(false));
 on("compact-btn", "click", () => compactChat().catch(showErr));
 document.addEventListener("click", (event) => {
   const wrap = $("checkpoint-wrap");

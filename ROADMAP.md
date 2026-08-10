@@ -19,6 +19,8 @@ Shipped in this program: bottom composer, workspace agent tools + diffs, rich Cu
 - Propose Accept conflict check (`before_hash`) when the file changed on disk
 - Composer workspace linking cue; sidebar Claude Code + Imported filters
 - Diff drawer Accept / Discard when reviewing pending proposals
+- Bedrock tool-round streaming (live deltas during AWS agent tool rounds)
+- Edit branch map panel (Branches) for switching forks beyond per-message ‹ ›
 
 ## Explicitly out of scope (for now)
 
@@ -31,5 +33,4 @@ Shipped in this program: bottom composer, workspace agent tools + diffs, rich Cu
 
 ## Still nice later
 
-- Full branch tree map UI (beyond per-message ‹ ›)
-- Bedrock tool-round streaming (Foundry streams today; AWS falls back to one-shot rounds)
+_(Empty for now — open a new review pass or pick a fresh feature when you want more.)_

@@ -22,7 +22,7 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260811f" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260811g" />
   </head>
   <body>
     <div class="atmosphere" aria-hidden="true">
@@ -123,6 +123,9 @@
             <button type="button" class="ghost tiny" id="outline-btn" hidden title="Jump to prompts">
               Outline
             </button>
+            <button type="button" class="ghost tiny" id="branch-btn" hidden title="Edit branch map">
+              Branches
+            </button>
             <button type="button" class="ghost tiny" id="compact-btn" hidden title="Compact older turns">
               Compact
             </button>
@@ -181,6 +184,13 @@
               <button type="button" class="ghost tiny" id="outline-close" aria-label="Close outline">×</button>
             </div>
             <ul class="prompt-outline-list" id="prompt-outline-list"></ul>
+          </aside>
+          <aside class="prompt-outline branch-map" id="branch-map" hidden>
+            <div class="prompt-outline-head">
+              <span>Branches</span>
+              <button type="button" class="ghost tiny" id="branch-close" aria-label="Close branch map">×</button>
+            </div>
+            <ul class="prompt-outline-list" id="branch-map-list"></ul>
           </aside>
           <div id="messages" class="messages" aria-live="polite" aria-relevant="additions">
             <div class="empty-stage" id="empty-stage">
@@ -452,6 +462,6 @@
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js"></script>
-    <script defer src="/static/app.js?v=20260811f"></script>
+    <script defer src="/static/app.js?v=20260811g"></script>
   </body>
 </html>
