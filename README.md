@@ -21,8 +21,8 @@ Portage is a local desktop (and browser) app that picks up conversations from **
 ### 1. Clone
 
 ```bash
-git clone https://github.com/HamzaIraqiHoussaini/cursor-foundry-chat.git
-cd cursor-foundry-chat
+git clone https://github.com/HamzaIraqiHoussaini/portage.git
+cd portage
 ```
 
 ### 2a. Browser mode (fastest)
