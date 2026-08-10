@@ -5,6 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Portage</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("portage-theme");
+          if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+          else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches)
+            document.documentElement.setAttribute("data-theme", "dark");
+        } catch (e) {}
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -12,7 +22,7 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" />
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260810f" />
   </head>
   <body>
     <div class="atmosphere" aria-hidden="true">
@@ -24,10 +34,57 @@
     <div class="app" id="app-shell">
       <aside class="rail" id="rail">
         <header class="brand">
-          <p class="brand-mark">Portage</p>
-          <p class="brand-sub">
-            Carry coding chats across Cursor, Claude Code, ChatGPT, and Antigravity — continue on Foundry or Bedrock.
-          </p>
+          <div class="brand-row">
+            <p class="brand-mark">Portage</p>
+            <div class="brand-actions">
+              <button
+                type="button"
+                class="icon-btn"
+                id="theme-toggle"
+                aria-label="Toggle dark mode"
+                title="Toggle dark mode"
+              >
+                <svg class="theme-icon theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5Z"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+                <svg class="theme-icon theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" hidden>
+                  <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.7" />
+                  <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="icon-btn"
+                id="settings-open"
+                aria-label="Open settings"
+                title="Settings"
+                aria-haspopup="dialog"
+                aria-controls="settings-sheet"
+                aria-expanded="false"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                  />
+                  <path
+                    d="M19.4 13a7.7 7.7 0 0 0 .1-2l2-1.2-2-3.4-2.3.6a7.6 7.6 0 0 0-1.7-1L15 4h-4l-.5 2a7.6 7.6 0 0 0-1.7 1l-2.3-.6-2 3.4 2 1.2a7.7 7.7 0 0 0 0 2l-2 1.2 2 3.4 2.3-.6a7.6 7.6 0 0 0 1.7 1l.5 2h4l.5-2a7.6 7.6 0 0 0 1.7-1l2.3.6 2-3.4-2-1.2Z"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <p class="brand-sub">Continue coding chats on Foundry or Bedrock.</p>
+          <button type="button" class="rail-status" id="provider-chip">Not connected · Settings</button>
         </header>
 
         <section class="panel chats-panel" id="chats-panel">
@@ -44,9 +101,125 @@
             <button type="button" class="filter-chip" data-filter="cursor" aria-pressed="false">Cursor</button>
             <button type="button" class="filter-chip" data-filter="claude-code" aria-pressed="false">Claude</button>
             <button type="button" class="filter-chip" data-filter="chatgpt" aria-pressed="false">ChatGPT</button>
-            <button type="button" class="filter-chip" data-filter="antigravity" aria-pressed="false">Antigravity</button>
+            <button type="button" class="filter-chip" data-filter="antigravity" aria-pressed="false" title="Antigravity">Anti</button>
           </div>
           <div id="chat-list" class="chat-list"></div>
+        </section>
+      </aside>
+
+      <main class="stage" id="stage">
+        <header class="stage-head">
+          <button id="mobile-back" class="ghost mobile-only" type="button" hidden>← Chats</button>
+          <div class="stage-titles">
+            <p class="eyebrow" id="active-project">Select or start a chat</p>
+            <h1 id="active-title">No conversation open</h1>
+          </div>
+          <div class="stage-tools">
+            <button
+              type="button"
+              class="icon-btn mobile-only"
+              id="theme-toggle-stage"
+              aria-label="Toggle dark mode"
+              title="Toggle dark mode"
+            >
+              <svg class="theme-icon theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+              </svg>
+              <svg class="theme-icon theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" hidden>
+                <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.7" />
+                <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="icon-btn mobile-only"
+              id="settings-open-stage"
+              aria-label="Open settings"
+              title="Settings"
+              aria-haspopup="dialog"
+              aria-controls="settings-sheet"
+              aria-expanded="false"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" stroke="currentColor" stroke-width="1.7" />
+                <path d="M19.4 13a7.7 7.7 0 0 0 .1-2l2-1.2-2-3.4-2.3.6a7.6 7.6 0 0 0-1.7-1L15 4h-4l-.5 2a7.6 7.6 0 0 0-1.7 1l-2.3-.6-2 3.4 2 1.2a7.7 7.7 0 0 0 0 2l-2 1.2 2 3.4 2.3-.6a7.6 7.6 0 0 0 1.7 1l.5 2h4l.5-2a7.6 7.6 0 0 0 1.7-1l2.3.6 2-3.4-2-1.2Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+              </svg>
+            </button>
+            <div class="token-meter" id="token-meter" aria-live="polite" title="Tokens: input → output · total" hidden>
+              <div class="token-cell">
+                <span class="token-label">Last reply</span>
+                <span class="token-value" id="token-last">—</span>
+              </div>
+              <div class="token-cell">
+                <span class="token-label">This chat</span>
+                <span class="token-value" id="token-chat">—</span>
+              </div>
+              <div class="token-cell">
+                <span class="token-label">Session in→out</span>
+                <span class="token-value" id="token-session">0 → 0 · 0</span>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <p class="sync-note" id="sync-note" hidden></p>
+
+        <div id="messages" class="messages" aria-live="polite" aria-relevant="additions">
+          <div class="empty-stage" id="empty-stage">
+            <p class="empty-lead" id="empty-lead">Pick a conversation on the left, or start a new one.</p>
+            <div class="empty-actions">
+              <button type="button" class="btn-primary" id="empty-new">New conversation</button>
+              <button type="button" class="ghost" id="empty-connect">Connect provider</button>
+            </div>
+          </div>
+        </div>
+
+        <form id="composer" class="composer">
+          <label class="composer-hint" id="composer-hint" for="message-input">Select a chat or start a new one</label>
+          <div class="composer-shell">
+            <div class="composer-input-wrap">
+              <div id="slash-menu" class="slash-menu" hidden></div>
+              <textarea
+                id="message-input"
+                rows="2"
+                placeholder="Message… or /skill-name"
+                disabled
+              ></textarea>
+            </div>
+            <button id="send-btn" type="submit" class="send-island" disabled>
+              <span>Send</span>
+              <span class="send-glyph" aria-hidden="true">↑</span>
+            </button>
+          </div>
+        </form>
+      </main>
+    </div>
+
+    <div class="settings-backdrop" id="settings-backdrop" hidden></div>
+    <aside
+      class="settings-sheet"
+      id="settings-sheet"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="settings-title"
+      hidden
+    >
+      <header class="settings-head">
+        <div>
+          <p class="eyebrow">Configuration</p>
+          <h2 id="settings-title">Settings</h2>
+        </div>
+        <button type="button" class="ghost" id="settings-close">Close</button>
+      </header>
+
+      <div class="settings-body">
+        <section class="panel" id="appearance-panel">
+          <h2>Appearance</h2>
+          <p class="panel-lead">Switch between light and dark surfaces. Preference is saved on this machine.</p>
+          <div class="theme-toggle" role="group" aria-label="Color theme">
+            <button type="button" class="theme-btn" data-theme-choice="light" id="theme-light">Light</button>
+            <button type="button" class="theme-btn" data-theme-choice="dark" id="theme-dark">Dark</button>
+          </div>
         </section>
 
         <section class="panel" id="connect-panel">
@@ -54,7 +227,7 @@
             <h2>Provider</h2>
             <button type="button" class="ghost tiny" id="provider-toggle" hidden>Edit</button>
           </div>
-          <p class="provider-chip" id="provider-chip" hidden></p>
+          <p class="provider-chip" id="provider-chip-settings" hidden></p>
           <div id="provider-body">
             <div class="seg" role="tablist" aria-label="Provider">
               <button type="button" class="seg-btn active" role="tab" aria-selected="true" data-provider="foundry" id="prov-foundry">Foundry</button>
@@ -168,65 +341,8 @@
           <p id="skills-meta" title="">Skills: —</p>
           <p id="settings-meta" title="">Cursor settings: —</p>
         </section>
-      </aside>
-
-      <main class="stage" id="stage">
-        <header class="stage-head">
-          <button id="mobile-back" class="ghost mobile-only" type="button" hidden>← Chats</button>
-          <div class="stage-titles">
-            <p class="eyebrow" id="active-project">Select or start a chat</p>
-            <h1 id="active-title">No conversation open</h1>
-          </div>
-          <div class="token-meter" id="token-meter" aria-live="polite" title="Tokens: input → output · total">
-            <div class="token-cell">
-              <span class="token-label">Last reply</span>
-              <span class="token-value" id="token-last">—</span>
-            </div>
-            <div class="token-cell">
-              <span class="token-label">This chat</span>
-              <span class="token-value" id="token-chat">—</span>
-            </div>
-            <div class="token-cell">
-              <span class="token-label">Session in→out</span>
-              <span class="token-value" id="token-session">0 → 0 · 0</span>
-            </div>
-          </div>
-        </header>
-
-        <p class="sync-note" id="sync-note">
-          Type <code>/</code> for skills. Import chats from Cursor, Claude Code, ChatGPT, or Antigravity.
-        </p>
-
-        <div id="messages" class="messages" aria-live="polite" aria-relevant="additions">
-          <div class="empty-stage" id="empty-stage">
-            <p class="empty-lead">Start a conversation or open one from the rail.</p>
-            <div class="empty-actions">
-              <button type="button" class="btn-primary" id="empty-new">New conversation</button>
-              <button type="button" class="ghost" id="empty-connect">Connect provider</button>
-            </div>
-          </div>
-        </div>
-
-        <form id="composer" class="composer">
-          <label class="composer-hint" id="composer-hint" for="message-input">Select a chat or start a new one</label>
-          <div class="composer-shell">
-            <div class="composer-input-wrap">
-              <div id="slash-menu" class="slash-menu" hidden></div>
-              <textarea
-                id="message-input"
-                rows="2"
-                placeholder="Message… or /skill-name"
-                disabled
-              ></textarea>
-            </div>
-            <button id="send-btn" type="submit" class="send-island" disabled>
-              <span>Send</span>
-              <span class="send-glyph" aria-hidden="true">↑</span>
-            </button>
-          </div>
-        </form>
-      </main>
-    </div>
+      </div>
+    </aside>
 
     <script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>

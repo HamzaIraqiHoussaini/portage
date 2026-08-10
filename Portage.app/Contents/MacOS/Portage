@@ -46,6 +46,8 @@ fi
 
 cd "$ROOT" || die "Cannot open project at $ROOT"
 export PYTHONUNBUFFERED=1
+# Finder apps get a minimal PATH — surface Frameworks / Homebrew Pythons.
+export PATH="/Library/Frameworks/Python.framework/Versions/3.13/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/Library/Frameworks/Python.framework/Versions/3.11/bin:/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}"
 
 run_python() {
   local py="$ROOT/.venv/bin/python"
@@ -59,16 +61,23 @@ run_python() {
 
 # shellcheck disable=SC1091
 source "$ROOT/scripts/ensure_deps.sh"
-ensure_python_deps "$ROOT" || die "Failed to install Python dependencies. See $LOG_FILE"
+ensure_python_deps "$ROOT" || die "Failed to install Python 3.11–3.13 dependencies. See $LOG_FILE"
 
 if [[ ! -f "$ROOT/.env" && -f "$ROOT/.env.example" ]]; then
   cp "$ROOT/.env.example" "$ROOT/.env"
 fi
 
-run_python -c "import pydantic_core, webview" || die "Desktop dependencies failed to load (often an Intel/ARM Python mismatch). Recreate .venv with: rm -rf .venv && python3 -m venv .venv && pip install -r requirements-desktop.txt. See $LOG_FILE"
+run_python -c "import sys; assert sys.version_info[:2] >= (3, 11), sys.version; import pydantic_core, webview" \
+  || die "Desktop dependencies failed (need Python 3.11–3.13). Recreate .venv or install Python from python.org. See $LOG_FILE"
 
-if is_apple_silicon && command -v arch >/dev/null 2>&1; then
-  exec arch -arm64 "$ROOT/.venv/bin/python" -m app.desktop
-else
-  exec "$ROOT/.venv/bin/python" -m app.desktop
+# Do NOT exec — replacing the shell with Frameworks Python drops the Portage
+# Dock icon (looks like a crash). Keep this script as the app process.
+set +e
+run_python -m app.desktop
+rc=$?
+set -e
+
+if [[ "$rc" -ne 0 ]]; then
+  die "Portage exited with code $rc. See $LOG_FILE"
 fi
+exit 0

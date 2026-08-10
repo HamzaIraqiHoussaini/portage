@@ -76,6 +76,8 @@ function updateTokenMeter() {
   if ($("token-last")) $("token-last").textContent = formatTokens(state.usageLast);
   if ($("token-chat")) $("token-chat").textContent = formatTokens(state.usageChat);
   if ($("token-session")) $("token-session").textContent = formatTokens(state.usageSession, { zeroOk: true });
+  const meter = $("token-meter");
+  if (meter) meter.hidden = !state.chatId;
 }
 
 function chatKey(chat) {
@@ -152,10 +154,11 @@ function setComposerEnabled(enabled, { connected = state.connected } = {}) {
   const canSend = enabled && connected;
   $("message-input").disabled = !canSend;
   $("send-btn").disabled = !canSend;
+  $("composer")?.classList.toggle("is-idle", !canSend);
   if (!enabled) {
     $("composer-hint").textContent = "Select a chat or start a new one";
   } else if (!connected) {
-    $("composer-hint").textContent = "Connect a provider to send · reading works now";
+    $("composer-hint").textContent = "Connect a provider in Settings to send";
   } else {
     $("composer-hint").textContent =
       "Enter to send · / for skills · Shift+Enter newline · markdown & LaTeX";
@@ -164,13 +167,160 @@ function setComposerEnabled(enabled, { connected = state.connected } = {}) {
 
 function setProviderCollapsed(collapsed) {
   const body = $("provider-body");
-  const chip = $("provider-chip");
+  const chip = $("provider-chip-settings");
   const toggle = $("provider-toggle");
-  if (!body || !chip || !toggle) return;
+  if (!body) return;
   body.hidden = collapsed;
-  chip.hidden = !collapsed;
-  toggle.hidden = !collapsed;
-  toggle.textContent = collapsed ? "Edit" : "Done";
+  if (chip) chip.hidden = !collapsed || !state.connected;
+  if (toggle) {
+    // Keep Edit/Done visible whenever connected so the form can be collapsed again.
+    toggle.hidden = !state.connected;
+    toggle.textContent = collapsed ? "Edit" : "Done";
+  }
+}
+
+function syncProviderChips(text, { ok = false } = {}) {
+  const label = text || "Not connected · Settings";
+  const rail = $("provider-chip");
+  if (rail) {
+    rail.textContent = label;
+    rail.hidden = false;
+    rail.classList.toggle("ok", !!ok);
+  }
+  const settingsChip = $("provider-chip-settings");
+  if (settingsChip) {
+    settingsChip.textContent = label;
+    // Visibility follows collapse state when connected
+    if (!state.connected) settingsChip.hidden = true;
+  }
+}
+
+const THEME_KEY = "portage-theme";
+
+function currentTheme() {
+  const attr = document.documentElement.getAttribute("data-theme");
+  if (attr === "dark" || attr === "light") return attr;
+  return "light";
+}
+
+function storedTheme() {
+  try {
+    const t = localStorage.getItem(THEME_KEY);
+    if (t === "dark" || t === "light") return t;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function setThemeIcons(theme) {
+  const dark = theme === "dark";
+  document.querySelectorAll(".theme-icon-moon").forEach((el) => {
+    el.hidden = dark;
+  });
+  document.querySelectorAll(".theme-icon-sun").forEach((el) => {
+    el.hidden = !dark;
+  });
+  for (const id of ["theme-toggle", "theme-toggle-stage"]) {
+    const toggle = $(id);
+    if (!toggle) continue;
+    toggle.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
+    toggle.title = dark ? "Light mode" : "Dark mode";
+  }
+}
+
+function applyTheme(theme, { persist = true } = {}) {
+  const next = theme === "dark" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", next);
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_KEY, next);
+    } catch {
+      /* ignore */
+    }
+  }
+  document.querySelectorAll(".theme-btn").forEach((btn) => {
+    const on = btn.dataset.themeChoice === next;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+  setThemeIcons(next);
+}
+
+let settingsLastFocus = null;
+
+function settingsFocusables() {
+  const sheet = $("settings-sheet");
+  if (!sheet) return [];
+  return [...sheet.querySelectorAll("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")].filter(
+    (el) => !el.disabled && !el.hidden && el.offsetParent !== null && el.getAttribute("aria-hidden") !== "true"
+  );
+}
+
+function onSettingsKeydown(event) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeSettings();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const nodes = settingsFocusables();
+  if (!nodes.length) return;
+  const first = nodes[0];
+  const last = nodes[nodes.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function openSettings({ focusConnect = false } = {}) {
+  const sheet = $("settings-sheet");
+  const backdrop = $("settings-backdrop");
+  const shell = $("app-shell");
+  if (!sheet || !backdrop) return;
+  settingsLastFocus = document.activeElement;
+  sheet.hidden = false;
+  backdrop.hidden = false;
+  document.body.style.overflow = "hidden";
+  if (shell) shell.setAttribute("aria-hidden", "true");
+  $("settings-open")?.setAttribute("aria-expanded", "true");
+  $("settings-open-stage")?.setAttribute("aria-expanded", "true");
+  document.addEventListener("keydown", onSettingsKeydown);
+  if (focusConnect) {
+    setProviderCollapsed(false);
+    requestAnimationFrame(() => {
+      $("connect-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      ($("connect-btn") || $("settings-close"))?.focus();
+    });
+  } else {
+    requestAnimationFrame(() => $("settings-close")?.focus());
+  }
+}
+
+function closeSettings() {
+  const sheet = $("settings-sheet");
+  const backdrop = $("settings-backdrop");
+  const shell = $("app-shell");
+  if (sheet) sheet.hidden = true;
+  if (backdrop) backdrop.hidden = true;
+  document.body.style.overflow = "";
+  if (shell) shell.removeAttribute("aria-hidden");
+  $("settings-open")?.setAttribute("aria-expanded", "false");
+  $("settings-open-stage")?.setAttribute("aria-expanded", "false");
+  document.removeEventListener("keydown", onSettingsKeydown);
+  const restore = settingsLastFocus;
+  settingsLastFocus = null;
+  if (restore && typeof restore.focus === "function") {
+    try {
+      restore.focus();
+    } catch {
+      $("settings-open")?.focus();
+    }
+  }
 }
 
 function escapeHtml(value) {
@@ -406,16 +556,18 @@ async function loadStatus() {
 
   renderWorkspaces(s.workspaces || []);
 
-  const chip = $("provider-chip");
+  const chipText = s.connected ? `Connected · ${s.provider} · ${s.model}` : "Not connected · Settings";
   if (s.connected) {
     setConnectStatus(`Connected · ${s.provider} · ${s.model}`, "ok");
-    if (chip) chip.textContent = `Connected · ${s.provider} · ${s.model}`;
+    syncProviderChips(chipText, { ok: true });
     setProviderCollapsed(true);
   } else if (s.has_key) {
     setConnectStatus("Credentials saved — test connection", "");
+    syncProviderChips("Credentials saved · Settings", { ok: false });
     setProviderCollapsed(false);
   } else {
     setConnectStatus("Not connected", "");
+    syncProviderChips("Not connected · Settings", { ok: false });
     setProviderCollapsed(false);
   }
 
@@ -590,6 +742,7 @@ async function loadChats() {
   const data = await api("/api/chats");
   state.chats = data.chats || [];
   renderChatList();
+  updateEmptyStage();
 }
 
 async function newChat() {
@@ -606,8 +759,36 @@ function updateEmptyStage() {
   const empty = $("empty-stage");
   if (!empty) return;
   empty.hidden = !!state.chatId;
+  const lead = $("empty-lead");
   const connectBtn = $("empty-connect");
-  if (connectBtn) connectBtn.hidden = state.connected;
+  const meter = $("token-meter");
+  const note = $("sync-note");
+  if (meter) meter.hidden = !state.chatId;
+  if (note && !state.chatId) {
+    note.hidden = true;
+    note.textContent = "";
+  }
+  if (state.chatId) return;
+
+  const hasChats = (state.chats || []).length > 0;
+  if (!state.connected) {
+    if (lead) {
+      lead.textContent = hasChats
+        ? "Connect a provider to send — you can still open chats to read them."
+        : "Connect a provider, then start or import a conversation.";
+    }
+    if (connectBtn) {
+      connectBtn.hidden = false;
+      connectBtn.textContent = "Connect provider";
+    }
+  } else {
+    if (lead) {
+      lead.textContent = hasChats
+        ? "Pick a conversation on the left, or start a new one."
+        : "Start a new conversation to begin.";
+    }
+    if (connectBtn) connectBtn.hidden = true;
+  }
 }
 
 async function openChat(id, sourceHint, transcriptPath) {
@@ -636,14 +817,17 @@ async function openChat(id, sourceHint, transcriptPath) {
     showChatView(true);
     updateEmptyStage();
     const note = $("sync-note");
-    if (state.chatSource === "cursor" && $("writeback-toggle").checked) {
-      note.textContent = "Continuing a Cursor chat — replies can write back to the transcript.";
-    } else if (state.chatSource === "claude-code") {
-      note.textContent = "Claude Code session — first reply continues as a local copy.";
-    } else if (state.chatSource === "chatgpt" || state.chatSource === "antigravity") {
-      note.textContent = `Imported from ${sourceLabel(state.chatSource)} — continue here on Foundry or Bedrock.`;
-    } else {
-      note.textContent = "Type / to invoke a skill. Token use shows above after each reply.";
+    if (note) {
+      note.hidden = false;
+      if (state.chatSource === "cursor" && $("writeback-toggle").checked) {
+        note.textContent = "Continuing a Cursor chat — replies can write back to the transcript.";
+      } else if (state.chatSource === "claude-code") {
+        note.textContent = "Claude Code session — first reply continues as a local copy.";
+      } else if (state.chatSource === "chatgpt" || state.chatSource === "antigravity") {
+        note.textContent = `Imported from ${sourceLabel(state.chatSource)} — continue here on Foundry or Bedrock.`;
+      } else {
+        note.textContent = "Type / to invoke a skill.";
+      }
     }
   } finally {
     $("messages").removeAttribute("aria-busy");
@@ -800,17 +984,27 @@ on("provider-toggle", "click", () => {
   if (!body) return;
   setProviderCollapsed(!body.hidden);
 });
+on("settings-open", "click", () => openSettings());
+on("settings-close", "click", closeSettings);
+on("settings-backdrop", "click", closeSettings);
+on("provider-chip", "click", () => openSettings({ focusConnect: !state.connected }));
+on("theme-toggle", "click", () => {
+  applyTheme(currentTheme() === "dark" ? "light" : "dark", { persist: true });
+});
+on("theme-toggle-stage", "click", () => {
+  applyTheme(currentTheme() === "dark" ? "light" : "dark", { persist: true });
+});
+document.querySelectorAll(".theme-btn").forEach((btn) => {
+  btn.addEventListener("click", () => applyTheme(btn.dataset.themeChoice, { persist: true }));
+});
+on("settings-open-stage", "click", () => openSettings());
 on("cursor-link-toggle", "change", toggleCursorLink);
 on("claude-code-toggle", "change", toggleClaudeCodeLink);
 on("writeback-toggle", "change", toggleWriteback);
 on("workspace-add", "click", addWorkspace);
 on("new-chat", "click", () => newChat().catch((e) => setConnectStatus(String(e.message || e), "err")));
 on("empty-new", "click", () => newChat().catch((e) => setConnectStatus(String(e.message || e), "err")));
-on("empty-connect", "click", () => {
-  setProviderCollapsed(false);
-  $("connect-panel")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  $("connect-btn")?.focus();
-});
+on("empty-connect", "click", () => openSettings({ focusConnect: true }));
 on("refresh-chats", "click", () =>
   loadChats().catch((err) => setConnectStatus(String(err.message || err), "err"))
 );
@@ -877,6 +1071,8 @@ window.addEventListener("resize", () => {
 });
 
 (async function init() {
+  const saved = storedTheme();
+  applyTheme(saved || currentTheme(), { persist: false });
   setComposerEnabled(false);
   showChatView(false);
   updateTokenMeter();
