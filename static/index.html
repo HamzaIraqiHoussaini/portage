@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cursor Foundry Chat</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,650&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <div class="app">
+      <aside class="rail">
+        <header class="brand">
+          <p class="brand-mark">Cursor Foundry Chat</p>
+          <p class="brand-sub">Continue Cursor threads on Microsoft Foundry. Write replies back into the same conversation.</p>
+        </header>
+
+        <section class="panel" id="connect-panel">
+          <h2>Foundry connection</h2>
+          <label>
+            Messages URL
+            <input
+              id="messages-url"
+              type="url"
+              placeholder="https://YOUR-RESOURCE.services.ai.azure.com/anthropic/v1/messages"
+              autocomplete="off"
+            />
+          </label>
+          <label>
+            API key
+            <input id="api-key" type="password" placeholder="Azure / Foundry key" autocomplete="off" />
+          </label>
+          <label>
+            Model deployment
+            <input id="model" type="text" value="claude-opus-5" autocomplete="off" />
+          </label>
+          <button id="connect-btn" type="button">Connect &amp; test</button>
+          <p class="status" id="connect-status">Not connected</p>
+        </section>
+
+        <section class="panel meta">
+          <h2>Imported context</h2>
+          <p id="skills-meta">Skills: —</p>
+          <p id="settings-meta">Cursor settings: —</p>
+          <label class="check">
+            <input id="writeback-toggle" type="checkbox" checked />
+            Write replies into Cursor transcript
+          </label>
+        </section>
+
+        <section class="panel chats-panel">
+          <div class="chats-head">
+            <h2>Cursor chats</h2>
+            <button id="refresh-chats" type="button" class="ghost">Refresh</button>
+          </div>
+          <div id="chat-list" class="chat-list"></div>
+        </section>
+      </aside>
+
+      <main class="stage">
+        <header class="stage-head">
+          <div>
+            <p class="eyebrow" id="active-project">Select a chat</p>
+            <h1 id="active-title">No conversation open</h1>
+          </div>
+          <p class="sync-note" id="sync-note">
+            Bridged turns are appended to Cursor agent transcripts and the conversation search index.
+          </p>
+        </header>
+
+        <div id="messages" class="messages"></div>
+
+        <form id="composer" class="composer">
+          <textarea
+            id="message-input"
+            rows="3"
+            placeholder="Continue this Cursor conversation via Foundry…"
+            disabled
+          ></textarea>
+          <button id="send-btn" type="submit" disabled>Send</button>
+        </form>
+      </main>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
