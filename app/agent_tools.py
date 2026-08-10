@@ -42,6 +42,21 @@ ALLOWED_COMMANDS = frozenset(
         "which",
     }
 )
+# Soft / Plan: inspection only — no interpreters, package managers, or make.
+READONLY_COMMANDS = frozenset(
+    {
+        "rg",
+        "ls",
+        "cat",
+        "wc",
+        "head",
+        "tail",
+        "echo",
+        "pwd",
+        "which",
+        "git",
+    }
+)
 GIT_ALLOWED_SUBCOMMANDS = frozenset(
     {"status", "diff", "log", "show", "ls-files", "rev-parse", "branch", "describe"}
 )
@@ -221,7 +236,11 @@ def execute_tool(
             dry_run=soft_apply or mode == "soft",
         )
     if name == "run_command":
-        return _run_command(workspace, args.get("command"))
+        return _run_command(
+            workspace,
+            args.get("command"),
+            readonly_only=mode in ("soft", "plan"),
+        )
     raise ToolError(f"Unknown tool: {name}")
 
 
@@ -361,7 +380,12 @@ def _grep(workspace: str, pattern: str, rel: str) -> dict[str, Any]:
     return {"content": "\n".join(hits) if hits else "(no matches)"}
 
 
-def _run_command(workspace: str, command: Any) -> dict[str, Any]:
+def _run_command(
+    workspace: str,
+    command: Any,
+    *,
+    readonly_only: bool = False,
+) -> dict[str, Any]:
     import shutil
     import subprocess
 
@@ -371,7 +395,13 @@ def _run_command(workspace: str, command: Any) -> dict[str, Any]:
     if any("\0" in a for a in argv):
         raise ToolError("Invalid argument")
     binary = Path(argv[0]).name
-    if binary not in ALLOWED_COMMANDS:
+    allowed = READONLY_COMMANDS if readonly_only else ALLOWED_COMMANDS
+    if binary not in allowed:
+        if readonly_only:
+            raise ToolError(
+                f"Command not allowed in Propose/Plan mode: {binary}. "
+                f"Inspection only: {', '.join(sorted(READONLY_COMMANDS))}"
+            )
         raise ToolError(f"Command not allowed: {binary}")
     if binary == "git":
         sub = next((a for a in argv[1:] if not a.startswith("-")), "")

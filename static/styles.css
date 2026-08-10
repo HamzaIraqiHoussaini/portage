@@ -1534,16 +1534,33 @@ select:focus {
   flex-direction: row;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   flex-shrink: 0;
   padding: 0 2px 0 4px;
   align-self: center;
 }
 
+.control-field {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.control-label {
+  font-size: 0.58rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  font-weight: 600;
+  padding-left: 8px;
+  line-height: 1;
+}
+
 .composer-controls .effort-select,
 select.effort-select {
   width: auto;
-  max-width: 7.5rem;
+  max-width: 7.2rem;
   flex: 0 0 auto;
   appearance: none;
   -webkit-appearance: none;
@@ -1551,9 +1568,9 @@ select.effort-select {
   background-color: transparent;
   color: var(--ink-soft);
   border-radius: 999px;
-  padding: 6px 20px 6px 8px;
+  padding: 4px 18px 4px 8px;
   font: inherit;
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   font-weight: 500;
   line-height: 1.2;
   cursor: pointer;
@@ -1800,25 +1817,102 @@ select.effort-select:focus-visible {
   flex-wrap: wrap;
   gap: 4px;
   margin-top: 8px;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-}
-
-.bubble:hover .msg-actions,
-.bubble:focus-within .msg-actions,
-.bubble.editing .msg-actions {
   opacity: 1;
-}
-
-@media (hover: none) {
-  .msg-actions {
-    opacity: 1;
-  }
+  align-items: center;
 }
 
 .msg-action {
   font-size: 0.68rem !important;
-  padding: 2px 8px !important;
+  padding: 4px 10px !important;
+  min-height: 1.75rem;
+}
+
+.msg-more {
+  position: relative;
+}
+
+.msg-more > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.msg-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.msg-more-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 4px);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-soft);
+  z-index: 4;
+  min-width: 7rem;
+}
+
+.pending-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 auto 8px;
+  width: 100%;
+  max-width: min(var(--measure) + 4rem, 100%);
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent-soft) 70%, var(--surface-raised));
+}
+
+.pending-bar[hidden] {
+  display: none !important;
+}
+
+.pending-bar-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pending-bar-copy strong {
+  font-size: 0.86rem;
+}
+
+.pending-bar-hint {
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+}
+
+.pending-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.accept-btn.tiny-action,
+#pending-accept {
+  border: 0;
+  background: var(--accent);
+  color: #f4fbf7;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.accept-btn.tiny-action:hover,
+#pending-accept:hover {
+  background: var(--accent-ink);
 }
 
 .edit-area {

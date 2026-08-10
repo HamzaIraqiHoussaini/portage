@@ -22,7 +22,7 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260811d" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260811e" />
   </head>
   <body>
     <div class="atmosphere" aria-hidden="true">
@@ -198,28 +198,49 @@
         </aside>
         <div class="diff-backdrop" id="diff-backdrop" hidden></div>
 
+        <div class="pending-bar" id="pending-bar" hidden>
+          <div class="pending-bar-copy">
+            <strong id="pending-bar-count">0 proposed</strong>
+            <span class="pending-bar-hint">Edits stay pending until you Accept</span>
+          </div>
+          <div class="pending-bar-actions">
+            <button type="button" class="ghost tiny" id="pending-review">Review</button>
+            <button type="button" class="ghost tiny" id="pending-discard">Discard</button>
+            <button type="button" class="btn-primary tiny-action" id="pending-accept">Accept all</button>
+          </div>
+        </div>
+
         <form id="composer" class="composer">
           <div class="composer-shell">
             <div class="composer-controls" role="group" aria-label="Reply settings">
-              <select id="mode-select" class="effort-select" aria-label="Chat mode" title="Agent writes · Soft proposes · Plan is read-only">
-                <option value="agent" selected>Agent</option>
-                <option value="soft">Soft</option>
-                <option value="plan">Plan</option>
-              </select>
-              <select id="thinking-select" class="effort-select" aria-label="Thinking mode" title="Thinking style">
-                <option value="adaptive" selected>Adaptive</option>
-                <option value="extended">Extended</option>
-                <option value="off">Off</option>
-              </select>
-              <select id="effort-select" class="effort-select" aria-label="Effort level" title="Effort / thinking depth">
-                <option value="none">None</option>
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high" selected>High</option>
-                <option value="extra_high">Extra high</option>
-                <option value="max">Max</option>
-                <option value="ultracode">Ultracode</option>
-              </select>
+              <label class="control-field">
+                <span class="control-label">Mode</span>
+                <select id="mode-select" class="effort-select" aria-label="Chat mode" title="Agent writes · Propose holds edits until Accept · Plan is read-only">
+                  <option value="agent" selected>Agent</option>
+                  <option value="soft">Propose</option>
+                  <option value="plan">Plan</option>
+                </select>
+              </label>
+              <label class="control-field">
+                <span class="control-label">Think</span>
+                <select id="thinking-select" class="effort-select" aria-label="Thinking mode" title="Thinking style">
+                  <option value="adaptive" selected>Adaptive</option>
+                  <option value="extended">Extended</option>
+                  <option value="off">Off</option>
+                </select>
+              </label>
+              <label class="control-field">
+                <span class="control-label">Effort</span>
+                <select id="effort-select" class="effort-select" aria-label="Effort level" title="Effort / thinking depth">
+                  <option value="none">None</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high" selected>High</option>
+                  <option value="extra_high">Extra high</option>
+                  <option value="max">Max</option>
+                  <option value="ultracode">Ultracode</option>
+                </select>
+              </label>
             </div>
             <div class="composer-input-wrap">
               <div id="attach-chips" class="attach-chips" hidden></div>
@@ -417,6 +438,6 @@
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js"></script>
-    <script defer src="/static/app.js?v=20260811d"></script>
+    <script defer src="/static/app.js?v=20260811e"></script>
   </body>
 </html>

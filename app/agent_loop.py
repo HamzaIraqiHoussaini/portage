@@ -304,24 +304,39 @@ async def run_agent_stream(
                     if isinstance(fc, dict):
                         wire_fc = dict(fc)
                         pending_content = wire_fc.pop("content", None)
-                        if soft_apply and fc.get("pending") and chat_id and pending_content is not None:
-                            meta = pending_patches.store_pending(
-                                chat_id=chat_id,
-                                path=str(fc.get("path") or ""),
-                                content=str(pending_content),
-                                op=str(fc.get("op") or "update"),
-                                diff=str(fc.get("diff") or ""),
-                                settings=settings,
-                            )
-                            wire_fc["patch_id"] = meta["id"]
-                            wire_fc["pending"] = True
-                        file_changes.append(wire_fc)
-                        blocks.append({"type": "file_change", **wire_fc})
-                        yield {
-                            "type": "file_change",
-                            **wire_fc,
-                            "checkpoint_id": checkpoint_id,
-                        }
+                        if soft_apply and fc.get("pending"):
+                            if not chat_id or pending_content is None:
+                                content = (
+                                    "Propose mode needs a local chat to store proposals. "
+                                    "Fork this conversation, then retry."
+                                )
+                                is_err = True
+                            else:
+                                meta = pending_patches.store_pending(
+                                    chat_id=chat_id,
+                                    path=str(fc.get("path") or ""),
+                                    content=str(pending_content),
+                                    op=str(fc.get("op") or "update"),
+                                    diff=str(fc.get("diff") or ""),
+                                    settings=settings,
+                                )
+                                wire_fc["patch_id"] = meta["id"]
+                                wire_fc["pending"] = True
+                                file_changes.append(wire_fc)
+                                blocks.append({"type": "file_change", **wire_fc})
+                                yield {
+                                    "type": "file_change",
+                                    **wire_fc,
+                                    "checkpoint_id": checkpoint_id,
+                                }
+                        else:
+                            file_changes.append(wire_fc)
+                            blocks.append({"type": "file_change", **wire_fc})
+                            yield {
+                                "type": "file_change",
+                                **wire_fc,
+                                "checkpoint_id": checkpoint_id,
+                            }
                 except agent_tools.ToolError as e:
                     content = str(e)
                     is_err = True

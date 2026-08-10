@@ -812,13 +812,16 @@ async def send_chat_stream(body: ChatBody, request: Request):
                     if etype == "checkpoint" and event.get("checkpoint_id"):
                         checkpoint_id = str(event.get("checkpoint_id"))
                     if etype == "file_change":
-                        file_changes.append(
-                            {
-                                "path": event.get("path"),
-                                "op": event.get("op"),
-                                "diff": event.get("diff") or "",
-                            }
-                        )
+                        fc_entry: dict[str, Any] = {
+                            "path": event.get("path"),
+                            "op": event.get("op"),
+                            "diff": event.get("diff") or "",
+                        }
+                        if event.get("pending"):
+                            fc_entry["pending"] = True
+                        if event.get("patch_id"):
+                            fc_entry["patch_id"] = event.get("patch_id")
+                        file_changes.append(fc_entry)
                         if event.get("checkpoint_id"):
                             checkpoint_id = str(event.get("checkpoint_id"))
                     if etype != "checkpoint":
@@ -1085,8 +1088,10 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
             extras.append(
                 "# Plan mode\n\n"
                 "You are in plan mode. Explore with read-only tools "
-                "(list_dir, read_file, grep, run_command for inspection). "
+                "(list_dir, read_file, grep, and inspection-only run_command). "
                 "Do NOT edit or create files. "
+                "run_command is limited to rg/ls/git status/diff/log and similar — "
+                "no interpreters or package managers. "
                 "You may spawn_subagent for parallel research. "
                 "Deliver a clear implementation plan: goals, steps, files to touch, "
                 "risks, and open questions. Wait for the user to switch to Agent mode "
@@ -1094,12 +1099,13 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
             )
         elif mode == "soft":
             extras.append(
-                "# Soft apply mode\n\n"
+                "# Propose mode (soft apply)\n\n"
                 "You can explore and propose file edits with apply_patch, but writes "
                 "are held as proposals until the user Accepts them in the UI. "
                 f"Stay within {agent_tools.MAX_PATCHES_PER_TURN} apply_patch calls per turn. "
-                "Prefer apply_patch for file changes. For commands use run_command with "
-                "an argv array (no shell). Keep proposals minimal and coherent."
+                "Prefer apply_patch for file changes. "
+                "run_command is inspection-only (rg, ls, git status/diff/log, …) — "
+                "no interpreters or package managers. Keep proposals minimal and coherent."
             )
         else:
             extras.append(
@@ -1118,6 +1124,12 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
         active_skill=skill_name,
         extra_blocks=extras,
     )
+
+    if mode == "soft" and source != "local":
+        raise HTTPException(
+            status_code=400,
+            detail="Propose mode needs a local chat. Fork this conversation first, then use Propose.",
+        )
 
     return {
         "settings": s,

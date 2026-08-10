@@ -812,7 +812,7 @@ function createStatEl(added, removed) {
   return wrap;
 }
 
-function createFilesChangedStrip(changes, { checkpointId = null } = {}) {
+function createFilesChangedStrip(changes, { checkpointId = null, compact = true } = {}) {
   const strip = document.createElement("div");
   strip.className = "files-changed";
   const pending = (changes || []).filter((c) => c && c.pending && c.patch_id);
@@ -834,33 +834,36 @@ function createFilesChangedStrip(changes, { checkpointId = null } = {}) {
   if (totals.added || totals.removed) {
     strip.appendChild(createStatEl(totals.added, totals.removed));
   }
-  const names = document.createElement("div");
-  names.className = "files-changed-list";
-  (changes || []).slice(0, 6).forEach((c) => {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "files-changed-row";
-    const path = document.createElement("span");
-    path.className = "files-changed-path";
-    path.textContent = shortChangePath(c.path);
-    path.title = c.path || "";
-    row.appendChild(path);
-    const s = countDiffStats(c.diff);
-    row.appendChild(createStatEl(s.added, s.removed));
-    row.addEventListener("click", () => openDiffDrawer(changes, c.path));
-    names.appendChild(row);
-  });
-  if ((changes || []).length > 6) {
-    const more = document.createElement("span");
-    more.className = "files-changed-more";
-    more.textContent = `+${changes.length - 6} more`;
-    names.appendChild(more);
+  // Expand file list for pending Soft proposals; otherwise keep one-line summary.
+  if (!compact || pending.length) {
+    const names = document.createElement("div");
+    names.className = "files-changed-list";
+    (changes || []).slice(0, pending.length ? 6 : 3).forEach((c) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "files-changed-row";
+      const path = document.createElement("span");
+      path.className = "files-changed-path";
+      path.textContent = shortChangePath(c.path);
+      path.title = c.path || "";
+      row.appendChild(path);
+      const s = countDiffStats(c.diff);
+      row.appendChild(createStatEl(s.added, s.removed));
+      row.addEventListener("click", () => openDiffDrawer(changes, c.path));
+      names.appendChild(row);
+    });
+    if ((changes || []).length > (pending.length ? 6 : 3)) {
+      const more = document.createElement("span");
+      more.className = "files-changed-more";
+      more.textContent = `+${changes.length - (pending.length ? 6 : 3)} more`;
+      names.appendChild(more);
+    }
+    strip.appendChild(names);
   }
-  strip.appendChild(names);
   if (pending.length) {
     const accept = document.createElement("button");
     accept.type = "button";
-    accept.className = "ghost tiny accept-btn";
+    accept.className = "accept-btn tiny-action";
     accept.textContent = pending.length === 1 ? "Accept" : "Accept all";
     accept.title = "Write proposed patches to disk";
     accept.addEventListener("click", () => applyPendingPatches(pending, strip));
@@ -877,7 +880,7 @@ function createFilesChangedStrip(changes, { checkpointId = null } = {}) {
     const reject = document.createElement("button");
     reject.type = "button";
     reject.className = "ghost tiny reject-btn";
-    reject.textContent = "Reject";
+    reject.textContent = "Restore";
     reject.title = "Restore files from checkpoint";
     reject.addEventListener("click", () => {
       const paths = applied.map((c) => c.path).filter(Boolean);
@@ -906,23 +909,34 @@ async function applyPendingPatches(pending, stripEl = null) {
       }),
     });
     const applied = result.applied || [];
+    const errors = result.errors || [];
     const note = $("sync-note");
     if (note) {
       note.hidden = false;
-      const n = applied.length;
-      note.textContent = `Accepted ${n} patch${n === 1 ? "" : "es"}.`;
-    }
-    if (stripEl) {
-      stripEl.classList.add("accepted");
-      stripEl.querySelectorAll(".accept-btn, .reject-btn").forEach((b) => {
-        b.disabled = true;
-      });
-      const btn = stripEl.querySelector(".files-changed-btn");
-      if (btn) {
-        const n = applied.length;
-        btn.textContent = `${n} file${n === 1 ? "" : "s"} applied`;
+      if (errors.length) {
+        note.textContent = `Accepted ${applied.length}, ${errors.length} failed.`;
+      } else {
+        note.textContent = `Accepted ${applied.length} patch${applied.length === 1 ? "" : "es"}.`;
       }
     }
+    const failedIds = new Set(errors.map((e) => e.patch_id).filter(Boolean));
+    const leftovers = pending.filter((p) => failedIds.has(p.patch_id));
+    if (stripEl) {
+      if (errors.length && leftovers.length) {
+        stripEl.replaceWith(createFilesChangedStrip(leftovers, { compact: false }));
+      } else {
+        stripEl.classList.add("accepted");
+        stripEl.querySelectorAll(".accept-btn, .reject-btn").forEach((b) => {
+          b.disabled = true;
+        });
+        const btn = stripEl.querySelector(".files-changed-btn");
+        if (btn) {
+          const n = applied.length;
+          btn.textContent = `${n} file${n === 1 ? "" : "s"} applied`;
+        }
+      }
+    }
+    await refreshPendingBar();
   } catch (err) {
     window.alert(err.message || String(err));
   }
@@ -948,9 +962,38 @@ async function rejectPendingPatches(pending, stripEl = null) {
       const btn = stripEl.querySelector(".files-changed-btn");
       if (btn) btn.textContent = "Proposals discarded";
     }
+    await refreshPendingBar();
   } catch (err) {
     window.alert(err.message || String(err));
   }
+}
+
+let pendingBarCache = [];
+
+async function refreshPendingBar() {
+  const bar = $("pending-bar");
+  if (!bar) return;
+  if (!state.chatId || state.chatSource !== "local") {
+    pendingBarCache = [];
+    bar.hidden = true;
+    return;
+  }
+  try {
+    const data = await api(`/api/chats/${encodeURIComponent(state.chatId)}/pending-patches`);
+    pendingBarCache = (data.patches || []).map((p) => ({
+      ...p,
+      patch_id: p.id || p.patch_id,
+      pending: true,
+    }));
+  } catch {
+    pendingBarCache = [];
+  }
+  const n = pendingBarCache.length;
+  bar.hidden = n === 0;
+  const countEl = $("pending-bar-count");
+  if (countEl) countEl.textContent = `${n} proposed`;
+  const accept = $("pending-accept");
+  if (accept) accept.textContent = n === 1 ? "Accept" : "Accept all";
 }
 
 function renderDiffHtml(diffText) {
@@ -1292,13 +1335,40 @@ function createMessageActions({ role, text, index, isLast, rawText, messageId, b
   if (role === "assistant" && isLast) {
     addBtn("Regenerate", "Regenerate this reply", () => regenerateLast().catch(showErr));
   }
-  if (index != null) {
-    addBtn("Fork", "Fork chat from this message", () => forkFromIndex(index).catch(showErr));
-    if (role === "user" || role === "assistant") {
-      addBtn("Rewind", "Remove everything after this message", () =>
-        rewindToIndex(index).catch(showErr)
-      );
-    }
+  if (index != null && (role === "user" || role === "assistant")) {
+    const more = document.createElement("details");
+    more.className = "msg-more";
+    const summary = document.createElement("summary");
+    summary.className = "ghost tiny msg-action";
+    summary.textContent = "More";
+    summary.title = "Fork or rewind";
+    more.appendChild(summary);
+    const menu = document.createElement("div");
+    menu.className = "msg-more-menu";
+    const forkBtn = document.createElement("button");
+    forkBtn.type = "button";
+    forkBtn.className = "ghost tiny msg-action";
+    forkBtn.textContent = "Fork";
+    forkBtn.title = "Fork chat from this message";
+    forkBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      more.removeAttribute("open");
+      forkFromIndex(index).catch(showErr);
+    });
+    const rewindBtn = document.createElement("button");
+    rewindBtn.type = "button";
+    rewindBtn.className = "ghost tiny msg-action";
+    rewindBtn.textContent = "Rewind";
+    rewindBtn.title = "Remove everything after this message";
+    rewindBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      more.removeAttribute("open");
+      rewindToIndex(index).catch(showErr);
+    });
+    menu.appendChild(forkBtn);
+    menu.appendChild(rewindBtn);
+    more.appendChild(menu);
+    bar.appendChild(more);
   }
   return bar;
 }
@@ -1752,13 +1822,19 @@ function finalizeStreamingBubble(bubble, body, text, usage, extras = {}) {
   }
 
   const host = bubble.querySelector(".files-changed-host");
-  if (fileChanges.length) {
+  const blocksHaveFiles = (blocks || []).some((b) => b && b.type === "file_change");
+  if (fileChanges.length && !blocksHaveFiles) {
     const strip = createFilesChangedStrip(fileChanges, { checkpointId });
     if (host) {
       host.innerHTML = "";
       host.appendChild(strip);
     } else bubble.insertBefore(strip, body);
-  } else if (host) host.remove();
+  } else if (host && !blocksHaveFiles) {
+    host.remove();
+  } else if (host && blocksHaveFiles) {
+    // Panel already rendered the strip — drop the empty host.
+    host.remove();
+  }
 
   const cleanedText = extractTools(text).text;
   if (cleanedText) {
@@ -2130,12 +2206,15 @@ function updateEmptyStage() {
   empty.hidden = !!state.chatId;
   const lead = $("empty-lead");
   const connectBtn = $("empty-connect");
-  const meter = $("token-meter");
   const note = $("sync-note");
-  if (meter) meter.hidden = !state.chatId;
+  updateTokenMeter();
   if (note && !state.chatId) {
     note.hidden = true;
     note.textContent = "";
+  }
+  if (!state.chatId) {
+    const bar = $("pending-bar");
+    if (bar) bar.hidden = true;
   }
   if (state.chatId) return;
 
@@ -2178,9 +2257,12 @@ async function openChat(id, sourceHint, transcriptPath) {
     $("active-title").textContent = thread.title || id;
     $("active-title").title = thread.title || id;
     const project = thread.project || thread.workspace || "";
-    $("active-project").textContent = project
-      ? `${sourceLabel(state.chatSource)} · ${project}`
-      : sourceLabel(state.chatSource);
+    const src = sourceLabel(state.chatSource);
+    if (project && project !== src && project.toLowerCase() !== "local") {
+      $("active-project").textContent = `${src} · ${project}`;
+    } else {
+      $("active-project").textContent = src;
+    }
     if (thread.workspace) $("workspace-select").value = thread.workspace;
     setComposerEnabled(true);
     setOutlineOpen(false);
@@ -2189,6 +2271,7 @@ async function openChat(id, sourceHint, transcriptPath) {
     updateEmptyStage();
     loadWorkspaceFiles($("workspace-select").value || thread.workspace || null).catch(() => {});
     refreshCheckpointMenu().catch(() => {});
+    refreshPendingBar().catch(() => {});
     const note = $("sync-note");
     if (note) {
       // Only surface notes that change behavior — skip generic tips.
@@ -2436,6 +2519,8 @@ async function sendMessageStream(text, opts = {}) {
             path: event.path,
             op: event.op,
             diff: event.diff || "",
+            pending: !!event.pending,
+            patch_id: event.patch_id || null,
           });
           updateStreamingFiles(filesStripHost, liveFileChanges);
           scrollMessages(root);
@@ -2462,6 +2547,7 @@ async function sendMessageStream(text, opts = {}) {
         file_changes: donePayload.file_changes || liveFileChanges,
         checkpoint_id: donePayload.checkpoint_id || null,
       });
+      refreshPendingBar().catch(() => {});
       if (donePayload.usage) {
         addSessionUsage(donePayload.usage);
         state.usageChat = donePayload.usage_total || state.usageChat;
@@ -2745,7 +2831,25 @@ on("thinking-select", "change", () => {
 });
 on("mode-select", "change", () => {
   const el = $("mode-select");
-  if (el) saveMode(el.value);
+  if (!el) return;
+  if (el.value === "soft" && state.chatSource && state.chatSource !== "local") {
+    window.alert("Propose mode needs a local chat. Fork this conversation first.");
+    el.value = state.mode || "agent";
+    return;
+  }
+  saveMode(el.value);
+});
+on("pending-accept", "click", () => {
+  if (!pendingBarCache.length) return;
+  applyPendingPatches(pendingBarCache).catch(showErr);
+});
+on("pending-discard", "click", () => {
+  if (!pendingBarCache.length) return;
+  rejectPendingPatches(pendingBarCache).catch(showErr);
+});
+on("pending-review", "click", () => {
+  if (!pendingBarCache.length) return;
+  openDiffDrawer(pendingBarCache);
 });
 on("attach-btn", "click", () => $("attach-input")?.click());
 on("attach-input", "change", (event) => {
