@@ -1491,12 +1491,9 @@ select:focus {
   flex-direction: column;
   overflow: auto;
   min-height: 0;
-  padding: 12px 8px 18px;
-}
+  min-width: 0;
   padding: 18px 8px 20px;
   scroll-behavior: smooth;
-  min-width: 0;
-  min-height: 0;
 }
 
 .messages > .empty {
