@@ -733,6 +733,284 @@ async def _foundry_chat_with_tools(
     }
 
 
+async def _foundry_chat_with_tools_stream(
+    messages: list[dict[str, Any]],
+    *,
+    system: str,
+    settings: Settings,
+    tools: list[dict[str, Any]],
+    max_tokens: int | None = None,
+    effort: str | None = None,
+    thinking_mode: str | None = None,
+):
+    """Stream Foundry tool rounds: yield delta/thinking/status, then tool_round_done."""
+    from .security import normalize_usage, sanitize_provider_error, validate_foundry_url
+
+    if not settings.foundry_api_key:
+        raise ProviderError("Foundry API key is empty.")
+    try:
+        url = validate_foundry_url(settings.foundry_messages_url)
+    except ValueError as e:
+        raise ProviderError(str(e)) from e
+
+    payload: dict[str, Any] = {
+        "model": settings.foundry_model,
+        "max_tokens": max_tokens or settings.foundry_max_tokens,
+        "system": system,
+        "messages": messages,
+        "stream": True,
+    }
+    if tools:
+        payload["tools"] = tools
+    mode = normalize_thinking_mode(thinking_mode)
+    apply_effort_to_payload(
+        payload, effort=effort, settings=settings, thinking_mode=mode
+    )
+    headers = {**_foundry_headers(settings), "Accept": "text/event-stream"}
+    yield {"type": "status", "phase": "model", "detail": "streaming"}
+
+    content_blocks: list[dict[str, Any]] = []
+    block_index: dict[int, dict[str, Any]] = {}
+    json_bufs: dict[int, list[str]] = {}
+    text_parts: list[str] = []
+    thinking_parts: list[str] = []
+    usage_acc: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    stop_reason: str | None = None
+
+    async with httpx.AsyncClient(timeout=300.0, follow_redirects=False) as client:
+        for attempt in range(3):
+            content_blocks.clear()
+            block_index.clear()
+            json_bufs.clear()
+            text_parts.clear()
+            thinking_parts.clear()
+            usage_acc = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            stop_reason = None
+            async with client.stream("POST", url, headers=headers, json=payload) as resp:
+                if resp.status_code >= 400:
+                    body = (await resp.aread()).decode("utf-8", errors="replace")
+                    if attempt == 0 and _thinking_display_unsupported(resp.status_code, body):
+                        apply_effort_to_payload(
+                            payload,
+                            effort=effort,
+                            settings=settings,
+                            thinking_mode=mode,
+                            include_thinking_display=False,
+                        )
+                        continue
+                    if (
+                        attempt < 2
+                        and mode == "extended"
+                        and _thinking_mode_unsupported(resp.status_code, body)
+                    ):
+                        mode = "adaptive"
+                        apply_effort_to_payload(
+                            payload,
+                            effort=effort,
+                            settings=settings,
+                            thinking_mode="adaptive",
+                        )
+                        continue
+                    raise ProviderError(sanitize_provider_error(resp.status_code, body))
+
+                event_name = ""
+                async for line in resp.aiter_lines():
+                    if not line:
+                        event_name = ""
+                        continue
+                    if line.startswith("event:"):
+                        event_name = line[6:].strip()
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[5:].strip()
+                    if not raw or raw == "[DONE]":
+                        event_name = ""
+                        continue
+                    try:
+                        data = json.loads(raw)
+                    except json.JSONDecodeError:
+                        event_name = ""
+                        continue
+                    dtype = data.get("type") or event_name
+                    event_name = ""
+
+                    if dtype == "content_block_start":
+                        idx = int(data.get("index") or 0)
+                        cb = data.get("content_block") if isinstance(data.get("content_block"), dict) else {}
+                        btype = cb.get("type")
+                        if btype == "tool_use":
+                            block = {
+                                "type": "tool_use",
+                                "id": cb.get("id"),
+                                "name": cb.get("name"),
+                                "input": cb.get("input") if isinstance(cb.get("input"), dict) else {},
+                            }
+                            block_index[idx] = block
+                            json_bufs[idx] = []
+                        elif btype in ("thinking", "reasoning"):
+                            block = {"type": "thinking", "thinking": ""}
+                            block_index[idx] = block
+                        else:
+                            block = {"type": "text", "text": ""}
+                            block_index[idx] = block
+                    elif dtype == "content_block_delta":
+                        idx = int(data.get("index") or 0)
+                        delta = data.get("delta") if isinstance(data.get("delta"), dict) else {}
+                        d_type = str(delta.get("type") or "")
+                        block = block_index.get(idx)
+                        if d_type == "input_json_delta" or delta.get("partial_json") is not None:
+                            chunk = str(delta.get("partial_json") or "")
+                            if idx in json_bufs:
+                                json_bufs[idx].append(chunk)
+                        elif d_type == "thinking_delta" or (not d_type and delta.get("thinking")):
+                            think = str(delta.get("thinking") or "")
+                            if think:
+                                thinking_parts.append(think)
+                                if block and block.get("type") == "thinking":
+                                    block["thinking"] = str(block.get("thinking") or "") + think
+                                yield {"type": "status", "phase": "thinking"}
+                                yield {"type": "thinking", "text": think}
+                        else:
+                            text = delta.get("text")
+                            if text:
+                                text_parts.append(str(text))
+                                if block and block.get("type") == "text":
+                                    block["text"] = str(block.get("text") or "") + str(text)
+                                yield {"type": "status", "phase": "writing"}
+                                yield {"type": "delta", "text": str(text)}
+                    elif dtype == "content_block_stop":
+                        idx = int(data.get("index") or 0)
+                        block = block_index.pop(idx, None)
+                        if not block:
+                            continue
+                        if block.get("type") == "tool_use":
+                            raw_json = "".join(json_bufs.pop(idx, []))
+                            if raw_json.strip():
+                                try:
+                                    parsed = json.loads(raw_json)
+                                    if isinstance(parsed, dict):
+                                        block["input"] = parsed
+                                except json.JSONDecodeError:
+                                    block["input"] = {"_raw": raw_json[:4000]}
+                            content_blocks.append(block)
+                        elif block.get("type") == "thinking":
+                            if str(block.get("thinking") or "").strip():
+                                content_blocks.append(block)
+                        elif block.get("type") == "text":
+                            if str(block.get("text") or ""):
+                                content_blocks.append(block)
+                    elif dtype == "message_start":
+                        msg = data.get("message") if isinstance(data.get("message"), dict) else {}
+                        u = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
+                        if u:
+                            usage_acc.clear()
+                            usage_acc.update(normalize_usage(u, provider="foundry"))
+                    elif dtype == "message_delta":
+                        delta = data.get("delta") if isinstance(data.get("delta"), dict) else {}
+                        if delta.get("stop_reason"):
+                            stop_reason = str(delta.get("stop_reason"))
+                        u = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+                        if u:
+                            partial = normalize_usage(u, provider="foundry")
+                            for key in ("input_tokens", "output_tokens", "total_tokens"):
+                                if partial.get(key):
+                                    usage_acc[key] = partial[key]
+                            if not usage_acc.get("total_tokens"):
+                                usage_acc["total_tokens"] = usage_acc.get(
+                                    "input_tokens", 0
+                                ) + usage_acc.get("output_tokens", 0)
+                break
+
+    # Flush any unfinished blocks (some gateways skip content_block_stop).
+    for idx, block in sorted(block_index.items()):
+        if block.get("type") == "tool_use":
+            raw_json = "".join(json_bufs.get(idx, []))
+            if raw_json.strip():
+                try:
+                    parsed = json.loads(raw_json)
+                    if isinstance(parsed, dict):
+                        block["input"] = parsed
+                except json.JSONDecodeError:
+                    block["input"] = {"_raw": raw_json[:4000]}
+        content_blocks.append(block)
+
+    if not usage_acc.get("total_tokens"):
+        usage_acc["total_tokens"] = usage_acc.get("input_tokens", 0) + usage_acc.get(
+            "output_tokens", 0
+        )
+    has_tools = any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content_blocks)
+    if has_tools and not stop_reason:
+        stop_reason = "tool_use"
+    yield {
+        "type": "tool_round_done",
+        "text": "".join(text_parts).strip(),
+        "content": content_blocks,
+        "stop_reason": stop_reason or "end_turn",
+        "model": settings.foundry_model,
+        "provider": "foundry",
+        "usage": usage_acc,
+    }
+
+
+async def stream_chat_completion_with_tools(
+    messages: list[dict[str, Any]],
+    *,
+    system: str,
+    settings: Settings | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    max_tokens: int | None = None,
+    effort: str | None = None,
+    thinking_mode: str | None = None,
+    mode: str | None = None,
+    allow_subagents: bool = True,
+):
+    """
+    Yield live delta/thinking/status for one model step, then tool_round_done
+    with Anthropic-shaped content blocks (including tool_use).
+    """
+    s = settings or get_settings()
+    from . import agent_tools
+
+    tool_defs = tools if tools is not None else agent_tools.anthropic_tools_payload(
+        mode=mode or "agent", allow_subagents=allow_subagents
+    )
+    if s.provider == "aws":
+        # Bedrock tool streaming is not wired; fall back to one-shot then emit result.
+        result = await chat_completion_with_tools(
+            messages,
+            system=system,
+            settings=s,
+            tools=tool_defs,
+            max_tokens=max_tokens,
+            effort=effort,
+            thinking_mode=thinking_mode,
+            mode=mode,
+            allow_subagents=allow_subagents,
+        )
+        yield {
+            "type": "tool_round_done",
+            "text": result.get("text") or "",
+            "content": result.get("content") or [],
+            "stop_reason": result.get("stop_reason"),
+            "model": result.get("model"),
+            "provider": result.get("provider") or "aws",
+            "usage": result.get("usage") or {},
+        }
+        return
+
+    async for event in _foundry_chat_with_tools_stream(
+        messages,
+        system=system,
+        settings=s,
+        tools=tool_defs,
+        max_tokens=max_tokens,
+        effort=effort,
+        thinking_mode=thinking_mode,
+    ):
+        yield event
+
+
 def _aws_normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert Anthropic-ish messages (string or block list) to Bedrock converse shape."""
     out: list[dict[str, Any]] = []

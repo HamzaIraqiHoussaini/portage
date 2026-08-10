@@ -9,7 +9,18 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import agent_loop, agent_tools, chats, checkpoints, importers, providers, skills, workspaces, writeback
+from . import (
+    agent_loop,
+    agent_tools,
+    chats,
+    checkpoints,
+    importers,
+    pending_patches,
+    providers,
+    skills,
+    workspaces,
+    writeback,
+)
 from .config import ROOT, get_settings
 from .security import (
     MAX_HISTORY_MESSAGES,
@@ -61,6 +72,14 @@ class ChatBody(BaseModel):
     edit_index: int | None = None  # edit user msg at index, truncate after, resubmit
     regenerate: bool = False  # drop last assistant, resubmit last user
     user_already_saved: bool = False  # don't re-append user on persist
+    attachments: list[dict[str, Any]] | None = None
+
+
+class AttachmentIn(BaseModel):
+    name: str = ""
+    mime: str = "application/octet-stream"
+    text: str | None = None
+    data_base64: str | None = None
 
 
 class TruncateBody(BaseModel):
@@ -104,6 +123,23 @@ class ClaudeCodeLinkBody(BaseModel):
 
 class WritebackBody(BaseModel):
     enabled: bool
+
+
+class PatchApplyBody(BaseModel):
+    chat_id: str
+    patch_id: str
+    workspace: str | None = None
+
+
+class PatchRejectBody(BaseModel):
+    chat_id: str
+    patch_id: str
+
+
+class PatchApplyAllBody(BaseModel):
+    chat_id: str
+    workspace: str | None = None
+    patch_ids: list[str] | None = None
 
 
 def _settings():
@@ -311,6 +347,118 @@ async def restore_checkpoint(body: RestoreBody):
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(e)) from e
     return result
+
+
+@app.get("/api/chats/{chat_id}/pending-patches")
+async def list_pending_patches(chat_id: str):
+    try:
+        workspaces.validate_chat_id(chat_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"patches": pending_patches.list_pending(chat_id, _settings())}
+
+
+@app.post("/api/patches/apply")
+async def apply_pending_patch(body: PatchApplyBody):
+    s = _settings()
+    try:
+        workspaces.validate_chat_id(body.chat_id)
+        workspaces.validate_chat_id(body.patch_id)
+        patch = pending_patches.load_pending(body.chat_id, body.patch_id, s)
+        local = workspaces.load_local_chat(body.chat_id, s)
+        workspace = workspaces.resolve_allowed_workspace(
+            body.workspace or (local.workspace if local else None),
+            settings=s,
+            allow_stored=local.workspace if local else None,
+        )
+        if not workspace:
+            raise ValueError("Link a workspace before applying patches.")
+        # Snapshot current file before accepting soft apply.
+        checkpoints.snapshot_before_write(
+            chat_id=body.chat_id,
+            workspace=workspace,
+            rel_path=str(patch.get("path") or ""),
+            settings=s,
+        )
+        result = agent_tools.apply_pending_patch(
+            workspace,
+            path=str(patch.get("path") or ""),
+            content=str(patch.get("content") or ""),
+        )
+        pending_patches.discard_pending(body.chat_id, body.patch_id, s)
+        fc = result.get("file_change") if isinstance(result.get("file_change"), dict) else {}
+        return {
+            "ok": True,
+            "patch_id": body.patch_id,
+            "path": fc.get("path") or patch.get("path"),
+            "op": fc.get("op") or patch.get("op"),
+            "diff": fc.get("diff") or patch.get("diff"),
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except (ValueError, agent_tools.ToolError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.post("/api/patches/apply-all")
+async def apply_all_pending_patches(body: PatchApplyAllBody):
+    s = _settings()
+    try:
+        workspaces.validate_chat_id(body.chat_id)
+        local = workspaces.load_local_chat(body.chat_id, s)
+        workspace = workspaces.resolve_allowed_workspace(
+            body.workspace or (local.workspace if local else None),
+            settings=s,
+            allow_stored=local.workspace if local else None,
+        )
+        if not workspace:
+            raise ValueError("Link a workspace before applying patches.")
+        ids = body.patch_ids
+        if not ids:
+            ids = [p["id"] for p in pending_patches.list_pending(body.chat_id, s) if p.get("id")]
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+        for pid in ids:
+            try:
+                workspaces.validate_chat_id(pid)
+                patch = pending_patches.load_pending(body.chat_id, pid, s)
+                checkpoints.snapshot_before_write(
+                    chat_id=body.chat_id,
+                    workspace=workspace,
+                    rel_path=str(patch.get("path") or ""),
+                    settings=s,
+                )
+                result = agent_tools.apply_pending_patch(
+                    workspace,
+                    path=str(patch.get("path") or ""),
+                    content=str(patch.get("content") or ""),
+                )
+                pending_patches.discard_pending(body.chat_id, pid, s)
+                fc = result.get("file_change") if isinstance(result.get("file_change"), dict) else {}
+                applied.append(
+                    {
+                        "patch_id": pid,
+                        "path": fc.get("path") or patch.get("path"),
+                        "op": fc.get("op") or patch.get("op"),
+                    }
+                )
+            except Exception as e:  # noqa: BLE001
+                errors.append({"patch_id": pid, "error": str(e)})
+        return {"ok": not errors, "applied": applied, "errors": errors}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.post("/api/patches/reject")
+async def reject_pending_patch(body: PatchRejectBody):
+    s = _settings()
+    try:
+        workspaces.validate_chat_id(body.chat_id)
+        workspaces.validate_chat_id(body.patch_id)
+        pending_patches.discard_pending(body.chat_id, body.patch_id, s)
+        return {"ok": True, "patch_id": body.patch_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.post("/api/workspaces")
@@ -868,16 +1016,63 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
 
     history = history[-MAX_HISTORY_MESSAGES:]
     model_for_llm = agent_tools.expand_mentions(model_message, workspace)
+
+    # Attachments: expand text into the prompt; images as multimodal content (Foundry).
+    att_meta: list[dict[str, Any]] = []
+    text_extra: list[str] = []
+    image_blocks: list[dict[str, Any]] = []
+    for raw in body.attachments or []:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name") or "file")[:200]
+        mime = str(raw.get("mime") or "application/octet-stream")[:120]
+        text_body = raw.get("text")
+        data_b64 = raw.get("data_base64")
+        if isinstance(text_body, str) and text_body.strip():
+            clipped = text_body[:80_000]
+            text_extra.append(f"\n\n--- attached: {name} ---\n{clipped}")
+            att_meta.append({"name": name, "mime": mime, "kind": "text"})
+        elif isinstance(data_b64, str) and data_b64 and mime.startswith("image/"):
+            if len(data_b64) > 5_500_000:
+                continue
+            media = (
+                mime
+                if mime in ("image/jpeg", "image/png", "image/gif", "image/webp")
+                else "image/png"
+            )
+            image_blocks.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media,
+                        "data": data_b64,
+                    },
+                }
+            )
+            att_meta.append({"name": name, "mime": mime, "kind": "image"})
+    if text_extra:
+        model_for_llm = model_for_llm + "".join(text_extra)
+    model_content: Any = (
+        [{"type": "text", "text": model_for_llm}, *image_blocks]
+        if image_blocks
+        else model_for_llm
+    )
+
     if not skip_append_user:
-        history.append({"role": "user", "content": model_for_llm})
+        history.append({"role": "user", "content": model_content})
     else:
-        # Ensure mentions expansion on the saved last user turn.
         if history and history[-1]["role"] == "user":
-            history[-1]["content"] = model_for_llm
-    merged: list[dict[str, str]] = []
+            history[-1]["content"] = model_content
+    merged: list[dict[str, Any]] = []
     for item in history:
         if merged and merged[-1]["role"] == item["role"]:
-            merged[-1]["content"] += "\n\n" + item["content"]
+            prev = merged[-1]["content"]
+            cur = item["content"]
+            if isinstance(prev, str) and isinstance(cur, str):
+                merged[-1]["content"] = prev + "\n\n" + cur
+            else:
+                merged.append(dict(item))
         else:
             merged.append(dict(item))
     while merged and merged[0]["role"] != "user":
@@ -897,12 +1092,23 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
                 "risks, and open questions. Wait for the user to switch to Agent mode "
                 "before making changes."
             )
+        elif mode == "soft":
+            extras.append(
+                "# Soft apply mode\n\n"
+                "You can explore and propose file edits with apply_patch, but writes "
+                "are held as proposals until the user Accepts them in the UI. "
+                f"Stay within {agent_tools.MAX_PATCHES_PER_TURN} apply_patch calls per turn. "
+                "Prefer apply_patch for file changes. For commands use run_command with "
+                "an argv array (no shell). Keep proposals minimal and coherent."
+            )
         else:
             extras.append(
                 "# Agent tools\n\n"
                 "You can use tools to list, read, search, edit files, and run allowlisted "
                 "commands inside the linked workspace only. Prefer apply_patch for file "
-                "changes. For commands use run_command with an argv array (no shell). "
+                "changes. "
+                f"Limit yourself to {agent_tools.MAX_PATCHES_PER_TURN} apply_patch calls "
+                "per turn. For commands use run_command with an argv array (no shell). "
                 "Use spawn_subagent for focused parallel research when helpful. "
                 "Keep edits minimal."
             )
@@ -912,6 +1118,7 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
         active_skill=skill_name,
         extra_blocks=extras,
     )
+
     return {
         "settings": s,
         "body": body,
@@ -928,6 +1135,7 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
         "thinking_mode": providers.normalize_thinking_mode(body.thinking_mode),
         "mode": mode,
         "user_already_saved": user_already_saved,
+        "attachments_meta": att_meta,
     }
 
 

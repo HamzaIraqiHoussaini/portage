@@ -12,6 +12,10 @@ Shipped in this program: bottom composer, workspace agent tools + diffs, rich Cu
 - Plan mode (read-only tools) and `spawn_subagent` for focused research
 - Chat mechanics: edit & resubmit, regenerate, fork, rewind, copy, ⌥↑ prompt recall
 - Prompt outline, Compact summary, and edit-branch ‹ › version switching
+- Soft apply mode (propose patches until Accept / Discard)
+- Per-turn `apply_patch` write budget (6 calls)
+- Streaming token deltas inside Foundry tool rounds
+- Message attachments (text files + images)
 
 ## Explicitly out of scope (for now)
 
@@ -24,8 +28,5 @@ Shipped in this program: bottom composer, workspace agent tools + diffs, rich Cu
 
 ## Still nice later
 
-- Streaming token deltas inside a single tool round (not just per text block)
-- Soft apply mode (propose patches without writing until confirm)
-- Per-turn write budget across multiple `apply_patch` calls
-- Message attachments / images
 - Full branch tree map UI (beyond per-message ‹ ›)
+- Bedrock tool-round streaming (Foundry streams today; AWS falls back to one-shot rounds)

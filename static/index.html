@@ -202,10 +202,11 @@
           <div class="composer-meta">
             <label class="composer-hint" id="composer-hint" for="message-input">Select a chat or start a new one</label>
             <div class="composer-meta-right">
-              <label class="effort-wrap" title="Agent edits files; Plan is read-only research">
+              <label class="effort-wrap" title="Agent writes files; Soft propose until Accept; Plan is read-only">
                 <span class="effort-label">Mode</span>
                 <select id="mode-select" class="effort-select" aria-label="Chat mode">
                   <option value="agent" selected>Agent</option>
+                  <option value="soft">Soft apply</option>
                   <option value="plan">Plan</option>
                 </select>
               </label>
@@ -238,6 +239,7 @@
           </div>
           <div class="composer-shell">
             <div class="composer-input-wrap">
+              <div id="attach-chips" class="attach-chips" hidden></div>
               <div id="slash-menu" class="slash-menu" hidden></div>
               <div id="mention-menu" class="slash-menu mention-menu" hidden></div>
               <textarea
@@ -248,6 +250,16 @@
               ></textarea>
             </div>
             <div class="composer-actions">
+              <input
+                id="attach-input"
+                type="file"
+                multiple
+                accept="image/*,.txt,.md,.json,.py,.js,.ts,.tsx,.css,.html,.csv,.yml,.yaml,.toml,.xml,.sh"
+                hidden
+              />
+              <button id="attach-btn" type="button" class="ghost tiny attach-btn" title="Attach files or images" disabled>
+                Attach
+              </button>
               <button id="send-btn" type="submit" class="send-island" disabled>
                 <span id="send-label">Send</span>
                 <span class="send-glyph" aria-hidden="true">↑</span>

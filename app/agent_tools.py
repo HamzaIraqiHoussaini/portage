@@ -15,6 +15,7 @@ MAX_LIST_ENTRIES = 80
 MAX_DIFF_CHARS = 24_000
 MAX_CMD_OUTPUT = 40_000
 MAX_CMD_TIMEOUT = 30
+MAX_PATCHES_PER_TURN = 6
 
 ALLOWED_COMMANDS = frozenset(
     {
@@ -198,6 +199,7 @@ def execute_tool(
     *,
     workspace: str,
     mode: str = "agent",
+    soft_apply: bool = False,
 ) -> dict[str, Any]:
     """Run one tool. Returns {content, file_change?}."""
     args = raw_input if isinstance(raw_input, dict) else {}
@@ -212,7 +214,12 @@ def execute_tool(
     if name == "grep":
         return _grep(workspace, str(args.get("pattern") or ""), str(args.get("path") or "."))
     if name == "apply_patch":
-        return _apply_patch(workspace, str(args.get("path") or ""), str(args.get("content") or ""))
+        return _apply_patch(
+            workspace,
+            str(args.get("path") or ""),
+            str(args.get("content") or ""),
+            dry_run=soft_apply or mode == "soft",
+        )
     if name == "run_command":
         return _run_command(workspace, args.get("command"))
     raise ToolError(f"Unknown tool: {name}")
@@ -399,7 +406,13 @@ def _run_command(workspace: str, command: Any) -> dict[str, Any]:
     return {"content": header + (out.strip() or "(no output)")}
 
 
-def _apply_patch(workspace: str, rel: str, content: str) -> dict[str, Any]:
+def _apply_patch(
+    workspace: str,
+    rel: str,
+    content: str,
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     if not rel.strip():
         raise ToolError("path is required")
     if len(content.encode("utf-8")) > MAX_WRITE_BYTES:
@@ -414,8 +427,6 @@ def _apply_patch(workspace: str, rel: str, content: str) -> dict[str, Any]:
         if not path.is_file():
             raise ToolError("Cannot overwrite a directory")
         before = path.read_text(encoding="utf-8", errors="replace")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
     label = rel_to_workspace(workspace, path)
     diff = unified_diff(label, before, content)
     change = {
@@ -423,8 +434,24 @@ def _apply_patch(workspace: str, rel: str, content: str) -> dict[str, Any]:
         "op": "update" if existed else "create",
         "diff": diff,
     }
+    if dry_run:
+        change["pending"] = True
+        change["content"] = content
+        summary = (
+            f"Proposed {'update' if existed else 'create'} for {label} "
+            f"({len(content)} chars) — soft apply, not written yet"
+        )
+        return {"content": summary, "file_change": change}
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
     summary = f"{'Updated' if existed else 'Created'} {label} ({len(content)} chars)"
     return {"content": summary, "file_change": change}
+
+
+def apply_pending_patch(workspace: str, *, path: str, content: str) -> dict[str, Any]:
+    """Write a previously proposed soft-apply patch to disk."""
+    return _apply_patch(workspace, path, content, dry_run=False)
 
 
 def anthropic_tools_payload(
@@ -433,6 +460,7 @@ def anthropic_tools_payload(
     allow_subagents: bool = True,
 ) -> list[dict[str, Any]]:
     tools = list(TOOL_DEFINITIONS)
+    # soft mode keeps apply_patch but writes are deferred (dry_run).
     if mode == "plan":
         tools = [t for t in tools if t["name"] not in WRITE_TOOLS]
     if not allow_subagents:

@@ -975,6 +975,52 @@ select:focus {
   font-family: var(--font-mono);
 }
 
+.files-changed.accepted .files-changed-btn {
+  opacity: 0.75;
+}
+
+.accept-btn {
+  color: var(--ink);
+}
+
+.attach-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 6px;
+}
+
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--mist);
+  color: var(--ink-soft);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attach-chip-x {
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.attach-btn {
+  align-self: flex-end;
+  margin-bottom: 2px;
+}
+
 .tool-timeline,
 .blocks-panel {
   display: flex;

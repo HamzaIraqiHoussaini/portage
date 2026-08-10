@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
-from . import agent_tools, checkpoints, providers
+from . import agent_tools, checkpoints, pending_patches, providers
 from .config import Settings
 from .providers import ProviderError
 
@@ -15,7 +15,11 @@ MAX_SUBAGENT_DEPTH = 1
 
 def normalize_mode(raw: str | None) -> str:
     value = (raw or "agent").strip().lower()
-    return "plan" if value == "plan" else "agent"
+    if value == "plan":
+        return "plan"
+    if value in ("soft", "soft_apply", "soft-apply"):
+        return "soft"
+    return "agent"
 
 
 async def run_agent_stream(
@@ -38,6 +42,7 @@ async def run_agent_stream(
     When workspace is set, tools are enabled; otherwise text-only stream.
     """
     agent_mode = normalize_mode(mode)
+    soft_apply = agent_mode == "soft"
     think_mode = providers.normalize_thinking_mode(thinking_mode)
     if not workspace:
         yield {"type": "status", "phase": "model", "detail": "streaming"}
@@ -67,6 +72,7 @@ async def run_agent_stream(
     model_name = settings.foundry_model if settings.provider != "aws" else settings.aws_model_id
     cancelled = False
     max_rounds = MAX_SUBAGENT_ROUNDS if depth > 0 else MAX_TOOL_ROUNDS
+    patch_writes = 0
 
     for _round in range(max_rounds):
         if cancel_check and cancel_check():
@@ -78,7 +84,9 @@ async def run_agent_stream(
             "detail": "waiting" if _round == 0 else f"round {_round + 1}",
         }
         try:
-            result = await providers.chat_completion_with_tools(
+            result = None
+            streamed_live = False
+            async for event in providers.stream_chat_completion_with_tools(
                 working,
                 system=system,
                 settings=settings,
@@ -87,7 +95,34 @@ async def run_agent_stream(
                 thinking_mode=thinking_mode,
                 mode=agent_mode,
                 allow_subagents=allow_subagents,
-            )
+            ):
+                if cancel_check and cancel_check():
+                    cancelled = True
+                    break
+                etype = event.get("type")
+                if etype == "delta":
+                    t = str(event.get("text") or "")
+                    if t:
+                        streamed_live = True
+                        text_parts.append(t)
+                        yield event
+                elif etype == "thinking":
+                    think = str(event.get("text") or "")
+                    if think.strip():
+                        streamed_live = True
+                        yield event
+                elif etype == "status":
+                    yield event
+                elif etype == "error":
+                    yield event
+                    return
+                elif etype == "tool_round_done":
+                    result = event
+            if cancelled:
+                break
+            if result is None:
+                yield {"type": "error", "detail": "Model returned no completion."}
+                return
         except ProviderError as e:
             yield {"type": "error", "detail": str(e)}
             return
@@ -111,16 +146,18 @@ async def run_agent_stream(
             if btype == "text":
                 t = str(block.get("text") or "")
                 if t:
-                    text_parts.append(t)
                     blocks.append({"type": "text", "text": t})
-                    yield {"type": "status", "phase": "writing"}
-                    yield {"type": "delta", "text": t}
+                    if not streamed_live:
+                        text_parts.append(t)
+                        yield {"type": "status", "phase": "writing"}
+                        yield {"type": "delta", "text": t}
             elif btype in ("thinking", "reasoning"):
                 think = str(block.get("thinking") or block.get("text") or "")
                 if think.strip():
                     blocks.append({"type": "thinking", "text": think})
-                    yield {"type": "status", "phase": "thinking"}
-                    yield {"type": "thinking", "text": think}
+                    if not streamed_live:
+                        yield {"type": "status", "phase": "thinking"}
+                        yield {"type": "thinking", "text": think}
             elif btype == "tool_use":
                 tool_uses.append(block)
                 blocks.append(
@@ -189,7 +226,7 @@ async def run_agent_stream(
                     cancel_check=cancel_check,
                     effort=effort,
                     thinking_mode=think_mode,
-                    mode=agent_mode,
+                    mode=agent_mode if agent_mode != "soft" else "plan",
                     depth=depth,
                     usage_acc=usage_acc,
                     blocks=blocks,
@@ -205,27 +242,86 @@ async def run_agent_stream(
                 if cancelled:
                     break
             else:
-                if name == "apply_patch" and chat_id and raw_input.get("path"):
-                    checkpoint_id = checkpoints.snapshot_before_write(
-                        chat_id=chat_id,
-                        workspace=workspace,
-                        rel_path=str(raw_input.get("path")),
-                        settings=settings,
-                        checkpoint_id=checkpoint_id,
-                    )
-                    yield {"type": "checkpoint", "checkpoint_id": checkpoint_id}
+                if name == "apply_patch":
+                    if patch_writes >= agent_tools.MAX_PATCHES_PER_TURN:
+                        content = (
+                            f"Write budget exceeded ({agent_tools.MAX_PATCHES_PER_TURN} "
+                            "apply_patch calls this turn). Summarize remaining edits "
+                            "or wait for the next user message."
+                        )
+                        is_err = True
+                        yield {
+                            "type": "tool_result",
+                            "id": tool_id,
+                            "name": name,
+                            "content": content[:8000],
+                            "is_error": is_err,
+                        }
+                        blocks.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "name": name,
+                                "content": content[:8000],
+                                "is_error": is_err,
+                            }
+                        )
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "content": content[:8000],
+                                "is_error": is_err,
+                            }
+                        )
+                        continue
+                    patch_writes += 1
+                    if (
+                        not soft_apply
+                        and chat_id
+                        and raw_input.get("path")
+                    ):
+                        checkpoint_id = checkpoints.snapshot_before_write(
+                            chat_id=chat_id,
+                            workspace=workspace,
+                            rel_path=str(raw_input.get("path")),
+                            settings=settings,
+                            checkpoint_id=checkpoint_id,
+                        )
+                        yield {"type": "checkpoint", "checkpoint_id": checkpoint_id}
 
                 try:
                     out = agent_tools.execute_tool(
-                        name, raw_input, workspace=workspace, mode=agent_mode
+                        name,
+                        raw_input,
+                        workspace=workspace,
+                        mode=agent_mode,
+                        soft_apply=soft_apply,
                     )
                     content = str(out.get("content") or "")
                     is_err = False
                     fc = out.get("file_change")
                     if isinstance(fc, dict):
-                        file_changes.append(fc)
-                        blocks.append({"type": "file_change", **fc})
-                        yield {"type": "file_change", **fc, "checkpoint_id": checkpoint_id}
+                        wire_fc = dict(fc)
+                        pending_content = wire_fc.pop("content", None)
+                        if soft_apply and fc.get("pending") and chat_id and pending_content is not None:
+                            meta = pending_patches.store_pending(
+                                chat_id=chat_id,
+                                path=str(fc.get("path") or ""),
+                                content=str(pending_content),
+                                op=str(fc.get("op") or "update"),
+                                diff=str(fc.get("diff") or ""),
+                                settings=settings,
+                            )
+                            wire_fc["patch_id"] = meta["id"]
+                            wire_fc["pending"] = True
+                        file_changes.append(wire_fc)
+                        blocks.append({"type": "file_change", **wire_fc})
+                        yield {
+                            "type": "file_change",
+                            **wire_fc,
+                            "checkpoint_id": checkpoint_id,
+                        }
                 except agent_tools.ToolError as e:
                     content = str(e)
                     is_err = True
@@ -270,7 +366,11 @@ async def run_agent_stream(
 
     final_text = "".join(text_parts).strip()
     if not final_text and file_changes:
-        final_text = f"Updated {len(file_changes)} file(s)."
+        pending_n = sum(1 for c in file_changes if c.get("pending"))
+        if pending_n:
+            final_text = f"Proposed {pending_n} file change(s) — Accept to write."
+        else:
+            final_text = f"Updated {len(file_changes)} file(s)."
     yield {
         "type": "done",
         "text": final_text,

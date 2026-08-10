@@ -29,6 +29,7 @@ const state = {
   supportsExtendedThinking: true,
   messages: [],
   promptCursor: -1,
+  attachments: [],
 };
 
 function loadEffort() {
@@ -53,14 +54,15 @@ function saveEffort(value) {
 function loadMode() {
   try {
     const v = localStorage.getItem(MODE_KEY);
-    return v === "plan" ? "plan" : "agent";
+    if (v === "plan" || v === "soft") return v;
+    return "agent";
   } catch {
     return "agent";
   }
 }
 
 function saveMode(value) {
-  state.mode = value === "plan" ? "plan" : "agent";
+  state.mode = value === "plan" || value === "soft" ? value : "agent";
   try {
     localStorage.setItem(MODE_KEY, state.mode);
   } catch {
@@ -274,6 +276,8 @@ function setComposerEnabled(enabled, { connected = state.connected } = {}) {
   const canSend = enabled && connected;
   $("message-input").disabled = !canSend;
   $("send-btn").disabled = !canSend;
+  const attachBtn = $("attach-btn");
+  if (attachBtn) attachBtn.disabled = !canSend;
   $("composer")?.classList.toggle("is-idle", !canSend);
   if (!enabled) {
     $("composer-hint").textContent = "Select a chat or start a new one";
@@ -281,8 +285,77 @@ function setComposerEnabled(enabled, { connected = state.connected } = {}) {
     $("composer-hint").textContent = "Connect a provider in Settings to send";
   } else {
     $("composer-hint").textContent =
-      "Enter to send · Edit/Regenerate on bubbles · ⌥↑ prompts · Esc stops";
+      "Enter to send · Attach files · Edit/Regenerate · ⌥↑ prompts · Esc stops";
   }
+}
+
+function renderAttachChips() {
+  const host = $("attach-chips");
+  if (!host) return;
+  host.innerHTML = "";
+  const items = state.attachments || [];
+  if (!items.length) {
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+  items.forEach((att, idx) => {
+    const chip = document.createElement("span");
+    chip.className = "attach-chip";
+    chip.textContent = att.name || "file";
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "attach-chip-x";
+    rm.setAttribute("aria-label", `Remove ${att.name || "attachment"}`);
+    rm.textContent = "×";
+    rm.addEventListener("click", () => {
+      state.attachments.splice(idx, 1);
+      renderAttachChips();
+    });
+    chip.appendChild(rm);
+    host.appendChild(chip);
+  });
+}
+
+function clearAttachments() {
+  state.attachments = [];
+  renderAttachChips();
+}
+
+async function readAttachmentFile(file) {
+  const name = file.name || "file";
+  const mime = file.type || "application/octet-stream";
+  const isImage = mime.startsWith("image/");
+  if (isImage) {
+    if (file.size > 4_000_000) throw new Error(`${name} is too large (max 4MB for images)`);
+    const buf = await file.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+    const data_base64 = btoa(binary);
+    return { name, mime: mime || "image/png", data_base64 };
+  }
+  if (file.size > 200_000) throw new Error(`${name} is too large (max 200KB for text)`);
+  const text = await file.text();
+  return { name, mime: mime || "text/plain", text };
+}
+
+async function addAttachmentFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  if ((state.attachments?.length || 0) + files.length > 6) {
+    window.alert("Max 6 attachments per message.");
+    return;
+  }
+  for (const file of files) {
+    try {
+      const att = await readAttachmentFile(file);
+      state.attachments.push(att);
+    } catch (err) {
+      window.alert(err.message || String(err));
+    }
+  }
+  renderAttachChips();
 }
 
 function setProviderCollapsed(collapsed) {
@@ -614,10 +687,18 @@ function createBlocksPanel(blocks, { checkpointId = null } = {}) {
 function createFilesChangedStrip(changes, { checkpointId = null } = {}) {
   const strip = document.createElement("div");
   strip.className = "files-changed";
+  const pending = (changes || []).filter((c) => c && c.pending && c.patch_id);
+  const applied = (changes || []).filter((c) => c && !c.pending);
   const label = document.createElement("button");
   label.type = "button";
   label.className = "files-changed-btn";
-  label.textContent = `${changes.length} file${changes.length === 1 ? "" : "s"} changed`;
+  if (pending.length && !applied.length) {
+    label.textContent = `${pending.length} proposed change${pending.length === 1 ? "" : "s"}`;
+  } else if (pending.length) {
+    label.textContent = `${changes.length} file${changes.length === 1 ? "" : "s"} (${pending.length} pending)`;
+  } else {
+    label.textContent = `${changes.length} file${changes.length === 1 ? "" : "s"} changed`;
+  }
   label.addEventListener("click", () => openDiffDrawer(changes));
   strip.appendChild(label);
   const names = document.createElement("span");
@@ -628,14 +709,30 @@ function createFilesChangedStrip(changes, { checkpointId = null } = {}) {
     .slice(0, 4)
     .join(", ");
   strip.appendChild(names);
-  if (checkpointId) {
+  if (pending.length) {
+    const accept = document.createElement("button");
+    accept.type = "button";
+    accept.className = "ghost tiny accept-btn";
+    accept.textContent = pending.length === 1 ? "Accept" : "Accept all";
+    accept.title = "Write proposed patches to disk";
+    accept.addEventListener("click", () => applyPendingPatches(pending, strip));
+    strip.appendChild(accept);
+    const rejectPending = document.createElement("button");
+    rejectPending.type = "button";
+    rejectPending.className = "ghost tiny reject-btn";
+    rejectPending.textContent = "Discard";
+    rejectPending.title = "Discard proposed patches";
+    rejectPending.addEventListener("click", () => rejectPendingPatches(pending, strip));
+    strip.appendChild(rejectPending);
+  }
+  if (checkpointId && applied.length) {
     const reject = document.createElement("button");
     reject.type = "button";
     reject.className = "ghost tiny reject-btn";
     reject.textContent = "Reject";
     reject.title = "Restore files from checkpoint";
     reject.addEventListener("click", () => {
-      const paths = changes.map((c) => c.path).filter(Boolean);
+      const paths = applied.map((c) => c.path).filter(Boolean);
       const preview = paths.slice(0, 8).join("\n") + (paths.length > 8 ? "\n…" : "");
       const ok = window.confirm(
         `Restore ${paths.length} file${paths.length === 1 ? "" : "s"} from checkpoint?\n\n${preview}`
@@ -646,6 +743,66 @@ function createFilesChangedStrip(changes, { checkpointId = null } = {}) {
     strip.appendChild(reject);
   }
   return strip;
+}
+
+async function applyPendingPatches(pending, stripEl = null) {
+  if (!state.chatId || !pending?.length) return;
+  const ids = pending.map((p) => p.patch_id).filter(Boolean);
+  try {
+    const result = await api("/api/patches/apply-all", {
+      method: "POST",
+      body: JSON.stringify({
+        chat_id: state.chatId,
+        workspace: $("workspace-select")?.value || null,
+        patch_ids: ids,
+      }),
+    });
+    const applied = result.applied || [];
+    const note = $("sync-note");
+    if (note) {
+      note.hidden = false;
+      const n = applied.length;
+      note.textContent = `Accepted ${n} patch${n === 1 ? "" : "es"}.`;
+    }
+    if (stripEl) {
+      stripEl.classList.add("accepted");
+      stripEl.querySelectorAll(".accept-btn, .reject-btn").forEach((b) => {
+        b.disabled = true;
+      });
+      const btn = stripEl.querySelector(".files-changed-btn");
+      if (btn) {
+        const n = applied.length;
+        btn.textContent = `${n} file${n === 1 ? "" : "s"} applied`;
+      }
+    }
+  } catch (err) {
+    window.alert(err.message || String(err));
+  }
+}
+
+async function rejectPendingPatches(pending, stripEl = null) {
+  if (!state.chatId || !pending?.length) return;
+  const ok = window.confirm(`Discard ${pending.length} proposed change${pending.length === 1 ? "" : "s"}?`);
+  if (!ok) return;
+  try {
+    for (const p of pending) {
+      if (!p.patch_id) continue;
+      await api("/api/patches/reject", {
+        method: "POST",
+        body: JSON.stringify({ chat_id: state.chatId, patch_id: p.patch_id }),
+      });
+    }
+    if (stripEl) {
+      stripEl.classList.add("restored");
+      stripEl.querySelectorAll(".accept-btn, .reject-btn").forEach((b) => {
+        b.disabled = true;
+      });
+      const btn = stripEl.querySelector(".files-changed-btn");
+      if (btn) btn.textContent = "Proposals discarded";
+    }
+  } catch (err) {
+    window.alert(err.message || String(err));
+  }
 }
 
 function renderDiffHtml(diffText) {
@@ -1860,10 +2017,16 @@ async function sendMessage(event) {
   event.preventDefault();
   const input = $("message-input");
   const text = input.value.trim();
-  if (!text) return;
+  if (!text && !(state.attachments && state.attachments.length)) return;
+  if (!text) {
+    window.alert("Add a short message with your attachment.");
+    return;
+  }
   input.value = "";
   state.promptCursor = -1;
-  await sendMessageStream(text, {});
+  const pendingAtt = (state.attachments || []).map((a) => ({ ...a }));
+  clearAttachments();
+  await sendMessageStream(text, { attachments: pendingAtt });
 }
 
 async function sendMessageStream(text, opts = {}) {
@@ -1947,6 +2110,11 @@ async function sendMessageStream(text, opts = {}) {
         ? state.thinkingMode || $("thinking-select")?.value || "adaptive"
         : "adaptive",
     };
+    if (opts.attachments?.length) {
+      payload.attachments = opts.attachments.map((a) => ({ ...a }));
+    } else if (state.attachments?.length) {
+      payload.attachments = state.attachments.map((a) => ({ ...a }));
+    }
     if (opts.editIndex != null) payload.edit_index = opts.editIndex;
     if (opts.regenerate) payload.regenerate = true;
     if (opts.editIndex != null || opts.regenerate) payload.user_already_saved = true;
@@ -2343,6 +2511,15 @@ on("thinking-select", "change", () => {
 on("mode-select", "change", () => {
   const el = $("mode-select");
   if (el) saveMode(el.value);
+});
+on("attach-btn", "click", () => $("attach-input")?.click());
+on("attach-input", "change", (event) => {
+  const files = event.target.files;
+  if (files?.length) {
+    addAttachmentFiles(files).finally(() => {
+      event.target.value = "";
+    });
+  }
 });
 on("diff-close", "click", closeDiffDrawer);
 on("diff-backdrop", "click", closeDiffDrawer);
