@@ -16,3 +16,7 @@ venv/
 .ruff_cache/
 dist/
 build/
+*.spec.bak
+graphify-out/
+scripts/AppIcon.iconset/
+scripts/icon-1024.png

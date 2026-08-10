@@ -1,111 +1,120 @@
-# Cursor Foundry Chat
+# Portage
 
-Continue Cursor agent conversations on **Microsoft Foundry** (Claude / Anthropic Messages API), with your local Cursor skills and settings loaded into context — and write replies back into the same Cursor transcript so you can return to Cursor without re-briefing.
+**Carry coding chats between tools — continue them on Microsoft Foundry or AWS Bedrock.**
 
-## Why this exists
+Portage is a local desktop (and browser) app that picks up conversations from **Cursor**, **Claude Code**, **ChatGPT**, and **Antigravity**, then lets you keep going with your own Foundry or Bedrock credentials — without fighting IDE BYOK limits.
 
-Cursor’s Azure BYOK path does not expose Foundry Claude’s Anthropic Messages API cleanly for every setup. This local bridge:
+> *Portage* (n.): carrying a boat between two bodies of water. Same idea for chats.
 
-1. Connects to your Foundry Anthropic endpoint (`…/anthropic/v1/messages`)
-2. Lists Cursor agent chats from `~/.cursor/projects/**/agent-transcripts`
-3. Imports Cursor / agent skills + relevant `settings.json` keys into the system prompt
-4. Chats via Foundry Opus (or your deployment name)
-5. Appends the exchange back to the Cursor JSONL transcript (+ conversation search index)
+---
 
-## Requirements
+## Install
 
-- macOS (paths assume Cursor’s macOS Application Support layout; Linux/Windows welcome via PRs)
-- Python 3.11+
-- A Microsoft Foundry (Azure AI) Anthropic-compatible deployment and API key
-- Existing Cursor agent transcripts to continue
+### Requirements
 
-## Quick start
+- **Python 3.11–3.13** (recommended)
+- macOS, Windows, or Linux
+- Optional: Cursor / Claude Code installed locally for auto-import
+- Windows desktop: [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) (usually preinstalled)
+- Linux desktop: WebKitGTK (e.g. `gir1.2-webkit2-4.1` / `webkit2gtk`)
+
+### 1. Clone
 
 ```bash
 git clone https://github.com/HamzaIraqiHoussaini/cursor-foundry-chat.git
 cd cursor-foundry-chat
+```
+
+### 2a. Browser mode (fastest)
+
+```bash
 chmod +x start.sh
 ./start.sh
 ```
 
 Open [http://127.0.0.1:8765](http://127.0.0.1:8765).
 
-Python **3.11–3.13** recommended (`start.sh` prefers those). Python 3.14 may fail until dependency wheels catch up.
-
-Or manually:
+Manual equivalent:
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env   # edit FOUNDRY_* values
 python -m app.main
 ```
 
-### Foundry connection
+### 2b. Desktop app (no Terminal window)
 
-In the UI (or `.env`):
-
-| Field | Example |
-| --- | --- |
-| Messages URL | `https://YOUR-RESOURCE.services.ai.azure.com/anthropic/v1/messages` |
-| API key | your Foundry / Azure AI key |
-| Model | `claude-opus-5` (your deployment name) |
-| Anthropic version | `2023-06-01` |
-
-Keys entered in the UI are stored locally in `data/bridge-config.json` (gitignored). Prefer `.env` for headless use.
-
-## What gets imported
-
-**Skills** (catalog + full priority bodies, budget-capped):
-
-- `~/.cursor/skills-cursor`
-- `~/.cursor/skills`
-- `~/.agents/skills`
-- `~/.claude/skills`
-- Cursor plugin skill caches under `~/.cursor/plugins/cache`
-
-**Settings:** Cursor-relevant keys from `~/Library/Application Support/Cursor/User/settings.json` (`cursor.*`, editor/terminal/workbench, etc.).
-
-## Write-back behavior
-
-When “Write replies into Cursor transcript” is on, each turn:
-
-1. Appends a user + assistant message (+ `turn_ended`) to the chat’s agent transcript JSONL
-2. Updates Cursor’s `conversation-search.db` FTS body / `updated_at`
-
-Bridged assistant messages are prefixed with `[foundry-bridge]`.
-
-**Caveats (please read):**
-
-- This targets **agent transcript** sync (the JSONL Cursor uses for agent history / search). Live Composer bubble UI may need a refresh / reopen to show new turns.
-- Do not run write-back against a chat Cursor is actively rewriting if you can avoid races; prefer continuing when the agent turn is idle.
-- This tool never needs your Cursor account password; it only reads/writes local files Cursor already stores on disk.
-
-## API (local)
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET | `/api/status` | Connection + skills summary |
-| POST | `/api/connect` | Save Foundry config + smoke test |
-| GET | `/api/chats` | List agent transcripts |
-| GET | `/api/chats/{id}` | Load thread |
-| POST | `/api/chat` | Send message (optional write-back) |
-| GET | `/api/skills` | Skill catalog |
-| GET | `/api/cursor-settings` | Filtered settings snapshot |
-
-## Security
-
-- Runs on `127.0.0.1` by default — do not expose to the public internet without auth.
-- Never commit `.env` or `data/bridge-config.json`.
-- Write-back mutates Cursor local DBs/files; keep backups if you customize aggressively.
-
-## Development
+Install desktop deps once:
 
 ```bash
-source .venv/bin/activate
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8765
+pip install -r requirements-desktop.txt
 ```
+
+Then double-click (keep these next to the repo checkout):
+
+| OS | Launch |
+| --- | --- |
+| **macOS** | `Portage.app` |
+| **Windows** | `Portage.vbs` (or `Portage.bat`) |
+| **Linux** | `./scripts/install-linux-desktop.sh` then open **Portage** from your app menu · or `./Portage.sh` |
+
+Or from a terminal:
+
+```bash
+python -m app.desktop
+```
+
+**macOS notes**
+
+- Gatekeeper: Right-click → Open, or  
+  `xattr -dr com.apple.quarantine Portage.app`
+- Apple Silicon: the launcher forces native ARM so Rosetta doesn’t break `pydantic` wheels. If launch still fails:  
+  `rm -rf .venv && python3 -m venv .venv && pip install -r requirements-desktop.txt`
+- Logs: `~/Library/Logs/Portage.log`
+
+**Portable builds** (relocatable binaries):
+
+```bash
+./scripts/build_desktop.sh      # macOS / Linux
+scripts\build_desktop.bat       # Windows
+```
+
+Output lands in `dist/Portage/` (and `dist/Portage.app` on macOS). Frozen config lives in `~/.portage/`.
+
+---
+
+## First-run setup
+
+1. Open **Provider** → choose **Foundry** or **AWS Bedrock**.
+2. Paste credentials → **Connect & test**.
+3. Under **Sources**:
+   - Toggle **Cursor** / **Claude Code** when detected on this machine.
+   - Click **ChatGPT** or **Antigravity** (or **Import…**) to load an export file.
+4. Open a conversation from the rail (or hit **New**) and chat.
+
+Token use for the last reply, this chat, and the session shows in the stage header.
+
+---
+
+## Features
+
+- **Providers:** Microsoft Foundry (Anthropic Messages) or AWS Bedrock Converse
+- **Imports:** Cursor & Claude Code (auto) · ChatGPT `conversations.json` · Antigravity JSON/Markdown exports
+- **Workspaces:** link local folders for context
+- **Skills:** type `/` to invoke agent skills
+- **Optional Cursor write-back** into the original transcript
+- **Security-minded local app:** localhost-only API mutations, SSRF checks on Foundry URLs, CSP, sanitization, size limits
+
+---
+
+## Configuration
+
+- Copy `.env.example` → `.env` for defaults (optional; the UI can save a local bridge config).
+- Dev data: `./data/`
+- Desktop frozen data: `~/.portage/` (legacy `~/.cursor-foundry-chat/` is still read if present)
+
+---
 
 ## License
 
@@ -113,4 +122,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Disclaimer
 
-Unofficial community project. Not affiliated with Anysphere (Cursor) or Microsoft. Cursor’s on-disk formats can change; if write-back breaks after an update, open an issue.
+Unofficial community project. Not affiliated with Anysphere (Cursor), Anthropic, OpenAI, Google, Microsoft, or Amazon.

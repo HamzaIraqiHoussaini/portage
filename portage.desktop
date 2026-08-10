@@ -1,0 +1,21 @@
+# Template only — do not use as-is from a random copy.
+# Install a working shortcut with absolute paths:
+#   ./scripts/install-linux-desktop.sh
+#
+# That writes ~/.local/share/applications/portage.desktop with:
+#   Exec=<checkout>/Portage.sh
+#   Path=<checkout>
+#   Icon=<user icons>/portage.svg
+
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Portage
+Comment=Carry coding chats across Cursor, Claude Code, ChatGPT, Antigravity to Foundry or Bedrock
+TryExec=./Portage.sh
+Exec=./Portage.sh
+Path=
+Icon=portage
+Terminal=false
+Categories=Development;Utility;
+StartupNotify=true

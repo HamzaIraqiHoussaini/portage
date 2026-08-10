@@ -11,6 +11,12 @@ from typing import Any
 from .config import Settings, get_settings
 
 TAG_RE = re.compile(r"</?(?:user_query|timestamp|think)[^>]*>", re.IGNORECASE)
+USER_QUERY_RE = re.compile(
+    r"<user_query>\s*([\s\S]*?)\s*</user_query>", re.IGNORECASE
+)
+TIMESTAMP_BLOCK_RE = re.compile(
+    r"<timestamp>\s*[\s\S]*?\s*</timestamp>", re.IGNORECASE
+)
 
 
 @dataclass
@@ -81,16 +87,51 @@ def _extract_text(content: Any) -> str:
 
 
 def _clean_user_text(text: str) -> str:
-    t = TAG_RE.sub("", text)
+    raw = text or ""
+    m = USER_QUERY_RE.search(raw)
+    if m:
+        t = m.group(1)
+    else:
+        t = TIMESTAMP_BLOCK_RE.sub("", raw)
+        t = TAG_RE.sub("", t)
     t = re.sub(r"\n{3,}", "\n\n", t).strip()
     return t
+
+
+def _plain_preview(text: str, limit: int = 160) -> str:
+    """Strip tools / markdown / math for chat-list snippets."""
+    t = TAG_RE.sub("", text or "")
+    t = re.sub(r"\[tool_use:[^\]]+\]", " ", t)
+    t = re.sub(r"\[tool_result\]", " ", t)
+    t = re.sub(r"\$\$[\s\S]+?\$\$", " ", t)
+    t = re.sub(r"\\\[[\s\S]+?\\\]", " ", t)
+    t = re.sub(r"\\\([\s\S]+?\\\)", " ", t)
+    t = re.sub(r"(?<!\$)\$(?!\$)(?:\\\$|[^$\n])+?\$(?!\$)", " ", t)
+    t = re.sub(r"`{1,3}[^`]*`{1,3}", " ", t)
+    t = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", t)
+    t = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", t)
+    t = re.sub(r"^#{1,6}\s+", "", t, flags=re.MULTILINE)
+    t = re.sub(r"[*_~>|]+", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    if len(t) > limit:
+        return t[: limit - 1] + "…"
+    return t
+
+
+def _human_project_name(slug: str) -> str:
+    name = slug
+    for prefix in ("Users-hamza-", "Users-", "home-"):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
+    return name.replace("-", " ")
 
 
 def _title_from_messages(messages: list[ChatMessage], fallback: str) -> str:
     for m in messages:
         if m.role == "user" and m.text.strip():
-            line = m.text.strip().splitlines()[0]
-            return (line[:80] + ("…" if len(line) > 80 else "")) or fallback
+            line = _plain_preview(m.text.strip().splitlines()[0], limit=80)
+            return line or fallback
     return fallback
 
 
@@ -136,8 +177,9 @@ def discover_transcripts(settings: Settings | None = None) -> list[ChatSummary]:
                 if not titles.get(cid):
                     title = _title_from_messages(msgs, cid)
                 for m in reversed(msgs):
-                    if m.text.strip():
-                        preview = m.text.strip()[:180]
+                    cleaned = _plain_preview(m.text)
+                    if cleaned:
+                        preview = cleaned
                         break
             except OSError:
                 pass
@@ -146,7 +188,7 @@ def discover_transcripts(settings: Settings | None = None) -> list[ChatSummary]:
                     id=cid,
                     title=title,
                     updated_at=_mtime_ms(jsonl),
-                    project=project_dir.name,
+                    project=_human_project_name(project_dir.name),
                     transcript_path=str(jsonl),
                     preview=preview,
                 )
@@ -206,21 +248,59 @@ def read_transcript_messages(path: Path | str, limit_tail: int | None = None) ->
     return messages
 
 
-def load_thread(chat_id: str, settings: Settings | None = None) -> ChatThread | None:
+def load_thread(
+    chat_id: str,
+    settings: Settings | None = None,
+    *,
+    transcript_path: str | None = None,
+) -> ChatThread | None:
     s = settings or get_settings()
+    wanted = None
+    if transcript_path:
+        try:
+            wanted = str(Path(transcript_path).expanduser().resolve())
+        except OSError:
+            wanted = transcript_path
     for summary in discover_transcripts(s):
-        if summary.id == chat_id:
-            messages = read_transcript_messages(summary.transcript_path)
-            if summary.title == summary.id:
-                summary.title = _title_from_messages(messages, summary.id)
-            return ChatThread(summary=summary, messages=messages)
+        if summary.id != chat_id:
+            continue
+        if wanted:
+            try:
+                if str(Path(summary.transcript_path).resolve()) != wanted:
+                    continue
+            except OSError:
+                if summary.transcript_path != transcript_path:
+                    continue
+        messages = read_transcript_messages(summary.transcript_path)
+        if summary.title == summary.id:
+            summary.title = _title_from_messages(messages, summary.id)
+        return ChatThread(summary=summary, messages=messages)
     return None
 
 
-def find_summary(chat_id: str, settings: Settings | None = None) -> ChatSummary | None:
+def find_summary(
+    chat_id: str,
+    settings: Settings | None = None,
+    *,
+    transcript_path: str | None = None,
+) -> ChatSummary | None:
+    wanted = None
+    if transcript_path:
+        try:
+            wanted = str(Path(transcript_path).expanduser().resolve())
+        except OSError:
+            wanted = transcript_path
     for summary in discover_transcripts(settings):
-        if summary.id == chat_id:
-            return summary
+        if summary.id != chat_id:
+            continue
+        if wanted:
+            try:
+                if str(Path(summary.transcript_path).resolve()) != wanted:
+                    continue
+            except OSError:
+                if summary.transcript_path != transcript_path:
+                    continue
+        return summary
     return None
 
 

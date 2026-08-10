@@ -1,0 +1,74 @@
+#!/bin/bash
+# macOS app launcher — no Terminal window when opened via Finder.
+# Dev convenience only: must sit next to the git checkout (or embed Resources/app).
+set -euo pipefail
+
+umask 077
+LOG_DIR="${HOME}/Library/Logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/Portage.log"
+# Rotate if larger than ~2MB
+if [[ -f "$LOG_FILE" ]]; then
+  size="$(wc -c <"$LOG_FILE" | tr -d ' ')"
+  if [[ "${size:-0}" -gt 2000000 ]]; then
+    mv "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null || true
+  fi
+fi
+touch "$LOG_FILE"
+chmod 600 "$LOG_FILE" 2>/dev/null || true
+exec >>"$LOG_FILE" 2>&1
+echo "---- $(date) ----"
+echo "uname=$(uname -m) translated=$(sysctl -n sysctl.proc_translated 2>/dev/null || echo n/a) arm64_hw=$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)"
+
+die() {
+  local msg="$1"
+  echo "ERROR: $msg"
+  osascript -e "display alert \"Portage\" message \"${msg}\" as critical" >/dev/null 2>&1 || true
+  exit 1
+}
+
+# Apple Silicon hardware even when THIS script is running under Rosetta (Finder often does that).
+is_apple_silicon() {
+  [[ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" == "1" ]]
+}
+
+APP_CONTENTS="$(cd "$(dirname "$0")/.." && pwd)"
+APP_BUNDLE="$(cd "$APP_CONTENTS/.." && pwd)"
+
+ROOT=""
+if [[ -f "$APP_BUNDLE/../desktop_app.py" || -f "$APP_BUNDLE/../app/desktop.py" ]]; then
+  ROOT="$(cd "$APP_BUNDLE/.." && pwd)"
+elif [[ -d "$APP_CONTENTS/Resources/app" && -f "$APP_CONTENTS/Resources/app/app/desktop.py" ]]; then
+  ROOT="$APP_CONTENTS/Resources/app"
+else
+  die "This .app must stay next to the project checkout (or use a PyInstaller build from dist/). Moving it alone to /Applications is not supported."
+fi
+
+cd "$ROOT" || die "Cannot open project at $ROOT"
+export PYTHONUNBUFFERED=1
+
+run_python() {
+  local py="$ROOT/.venv/bin/python"
+  [[ -x "$py" ]] || die "Python venv missing at $py"
+  if is_apple_silicon && command -v arch >/dev/null 2>&1; then
+    arch -arm64 "$py" "$@"
+  else
+    "$py" "$@"
+  fi
+}
+
+# shellcheck disable=SC1091
+source "$ROOT/scripts/ensure_deps.sh"
+ensure_python_deps "$ROOT" || die "Failed to install Python dependencies. See $LOG_FILE"
+
+if [[ ! -f "$ROOT/.env" && -f "$ROOT/.env.example" ]]; then
+  cp "$ROOT/.env.example" "$ROOT/.env"
+fi
+
+run_python -c "import pydantic_core, webview" || die "Desktop dependencies failed to load (often an Intel/ARM Python mismatch). Recreate .venv with: rm -rf .venv && python3 -m venv .venv && pip install -r requirements-desktop.txt. See $LOG_FILE"
+
+if is_apple_silicon && command -v arch >/dev/null 2>&1; then
+  exec arch -arm64 "$ROOT/.venv/bin/python" -m app.desktop
+else
+  exec "$ROOT/.venv/bin/python" -m app.desktop
+fi

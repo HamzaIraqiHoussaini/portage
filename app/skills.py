@@ -274,21 +274,76 @@ def build_settings_context(settings: Settings | None = None) -> str:
     )
 
 
-def build_system_preamble(settings: Settings | None = None) -> str:
+def find_skill_by_name(name: str, settings: Settings | None = None) -> SkillInfo | None:
+    needle = name.strip().lstrip("/").lower()
+    if not needle:
+        return None
+    for sk in list_skills(settings):
+        if sk.name.lower() == needle:
+            return sk
+    for sk in list_skills(settings):
+        if sk.name.lower().startswith(needle):
+            return sk
+    return None
+
+
+def parse_slash_command(message: str) -> tuple[str | None, str]:
+    """Return (skill_name, remainder) if message starts with /skill…"""
+    text = (message or "").strip()
+    if not text.startswith("/"):
+        return None, text
+    # /skill-name rest of message
+    first, _, rest = text[1:].partition(" ")
+    skill = first.strip().strip("/")
+    if not skill or skill.startswith("/"):
+        return None, text
+    return skill, rest.strip()
+
+
+def build_skill_injection(skill_name: str, settings: Settings | None = None) -> str:
+    sk = find_skill_by_name(skill_name, settings)
+    if not sk:
+        return f"# Requested skill `/{skill_name}`\n\nSkill not found.\n"
+    try:
+        body = load_skill_text(sk.path)
+    except OSError as e:
+        return f"# Requested skill `/{skill_name}`\n\nCould not read skill: {e}\n"
+    return (
+        f"# Active skill: {sk.name}\n"
+        f"Source: `{sk.path}`\n\n"
+        f"Follow this skill for the user's current request.\n\n{body}\n"
+    )
+
+
+def build_system_preamble(
+    settings: Settings | None = None,
+    *,
+    include_cursor_settings: bool = True,
+    include_skills_catalog: bool = True,
+    extra_blocks: list[str] | None = None,
+    active_skill: str | None = None,
+) -> str:
     s = settings or get_settings()
     parts = [
-        "You are the Cursor–Foundry bridge assistant.",
-        "You continue conversations that originated in Cursor, using Microsoft Foundry (Claude Opus).",
-        "Your replies are written back into the Cursor agent transcript so the user can resume in Cursor without re-briefing.",
+        "You are a coding assistant in Portage.",
+        "You may run on Microsoft Foundry or AWS Bedrock depending on the user's connection.",
+        "If a Cursor conversation is linked, preserve continuity. If not, treat this as a standalone chat.",
+        "When the user invokes a /skill, follow that skill closely.",
         "",
         "Important behavior:",
-        "- Preserve continuity with the prior Cursor thread.",
-        "- Do not claim you can edit Cursor's live composer bubble store unless write-back succeeded.",
-        "- Prefer actionable answers; keep continuity notes minimal.",
-        "- When Cursor skills apply, follow them.",
+        "- Prefer actionable answers.",
+        "- Respect linked workspace paths when provided.",
+        "- Do not invent write-back success; only claim Cursor sync when it happened.",
         "",
-        build_settings_context(s),
-        "",
-        build_skills_context(s),
     ]
+    if include_cursor_settings:
+        parts.extend([build_settings_context(s), ""])
+    if include_skills_catalog:
+        parts.extend([build_skills_context(s), ""])
+    if active_skill:
+        parts.extend([build_skill_injection(active_skill, s), ""])
+    if extra_blocks:
+        for block in extra_blocks:
+            if block and block.strip():
+                parts.extend([block.strip(), ""])
     return "\n".join(parts)

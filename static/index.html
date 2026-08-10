@@ -3,90 +3,235 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Cursor Foundry Chat</title>
+    <title>Portage</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,650&display=swap"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,500;6..72,650&family=Sora:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
-    <div class="grain" aria-hidden="true"></div>
-    <div class="app">
-      <aside class="rail">
+    <div class="atmosphere" aria-hidden="true">
+      <div class="orb orb-a"></div>
+      <div class="orb orb-b"></div>
+      <div class="grain"></div>
+    </div>
+
+    <div class="app" id="app-shell">
+      <aside class="rail" id="rail">
         <header class="brand">
-          <p class="brand-mark">Cursor Foundry Chat</p>
-          <p class="brand-sub">Continue Cursor threads on Microsoft Foundry. Write replies back into the same conversation.</p>
-        </header>
-
-        <section class="panel" id="connect-panel">
-          <h2>Foundry connection</h2>
-          <label>
-            Messages URL
-            <input
-              id="messages-url"
-              type="url"
-              placeholder="https://YOUR-RESOURCE.services.ai.azure.com/anthropic/v1/messages"
-              autocomplete="off"
-            />
-          </label>
-          <label>
-            API key
-            <input id="api-key" type="password" placeholder="Azure / Foundry key" autocomplete="off" />
-          </label>
-          <label>
-            Model deployment
-            <input id="model" type="text" value="claude-opus-5" autocomplete="off" />
-          </label>
-          <button id="connect-btn" type="button">Connect &amp; test</button>
-          <p class="status" id="connect-status">Not connected</p>
-        </section>
-
-        <section class="panel meta">
-          <h2>Imported context</h2>
-          <p id="skills-meta">Skills: —</p>
-          <p id="settings-meta">Cursor settings: —</p>
-          <label class="check">
-            <input id="writeback-toggle" type="checkbox" checked />
-            Write replies into Cursor transcript
-          </label>
-        </section>
-
-        <section class="panel chats-panel">
-          <div class="chats-head">
-            <h2>Cursor chats</h2>
-            <button id="refresh-chats" type="button" class="ghost">Refresh</button>
-          </div>
-          <div id="chat-list" class="chat-list"></div>
-        </section>
-      </aside>
-
-      <main class="stage">
-        <header class="stage-head">
-          <div>
-            <p class="eyebrow" id="active-project">Select a chat</p>
-            <h1 id="active-title">No conversation open</h1>
-          </div>
-          <p class="sync-note" id="sync-note">
-            Bridged turns are appended to Cursor agent transcripts and the conversation search index.
+          <p class="brand-mark">Portage</p>
+          <p class="brand-sub">
+            Carry coding chats across Cursor, Claude Code, ChatGPT, and Antigravity — continue on Foundry or Bedrock.
           </p>
         </header>
 
-        <div id="messages" class="messages"></div>
+        <section class="panel chats-panel" id="chats-panel">
+          <div class="chats-head">
+            <h2>Conversations</h2>
+            <div class="row-tight">
+              <button id="new-chat" type="button" class="ghost">New</button>
+              <button id="refresh-chats" type="button" class="ghost">Refresh</button>
+            </div>
+          </div>
+          <div class="filter-row" id="source-filter" role="group" aria-label="Filter by source">
+            <button type="button" class="filter-chip active" data-filter="all" aria-pressed="true">All</button>
+            <button type="button" class="filter-chip" data-filter="local" aria-pressed="false">Local</button>
+            <button type="button" class="filter-chip" data-filter="cursor" aria-pressed="false">Cursor</button>
+            <button type="button" class="filter-chip" data-filter="claude-code" aria-pressed="false">Claude</button>
+            <button type="button" class="filter-chip" data-filter="chatgpt" aria-pressed="false">ChatGPT</button>
+            <button type="button" class="filter-chip" data-filter="antigravity" aria-pressed="false">Antigravity</button>
+          </div>
+          <div id="chat-list" class="chat-list"></div>
+        </section>
+
+        <section class="panel" id="connect-panel">
+          <div class="panel-head-row">
+            <h2>Provider</h2>
+            <button type="button" class="ghost tiny" id="provider-toggle" hidden>Edit</button>
+          </div>
+          <p class="provider-chip" id="provider-chip" hidden></p>
+          <div id="provider-body">
+            <div class="seg" role="tablist" aria-label="Provider">
+              <button type="button" class="seg-btn active" role="tab" aria-selected="true" data-provider="foundry" id="prov-foundry">Foundry</button>
+              <button type="button" class="seg-btn" role="tab" aria-selected="false" data-provider="aws" id="prov-aws">AWS Bedrock</button>
+            </div>
+
+            <div id="foundry-fields">
+              <label>
+                Messages URL
+                <input
+                  id="messages-url"
+                  class="url-input"
+                  type="url"
+                  placeholder="https://YOUR-RESOURCE.services.ai.azure.com/anthropic/v1/messages"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+              <label>
+                API key
+                <input id="api-key" type="password" placeholder="Azure / Foundry key" autocomplete="off" />
+                <span class="field-note" id="api-key-note" hidden>Key saved on this machine — enter a new one only to replace it.</span>
+              </label>
+              <label>
+                Model deployment
+                <input id="model" type="text" value="claude-opus-5" autocomplete="off" />
+              </label>
+            </div>
+
+            <div id="aws-fields" hidden>
+              <label>
+                Region
+                <input id="aws-region" type="text" value="us-east-1" autocomplete="off" />
+              </label>
+              <label>
+                Access key ID
+                <input id="aws-access-key" type="text" autocomplete="off" />
+              </label>
+              <label>
+                Secret access key
+                <input id="aws-secret-key" type="password" autocomplete="off" />
+                <span class="field-note" id="aws-key-note" hidden>Credentials saved locally — enter new values only to replace.</span>
+              </label>
+              <label>
+                Session token (optional)
+                <input id="aws-session" type="password" autocomplete="off" />
+              </label>
+              <label>
+                Model ID
+                <input id="aws-model" type="text" value="anthropic.claude-opus-4-20250514-v1:0" autocomplete="off" />
+              </label>
+            </div>
+
+            <button id="connect-btn" type="button" class="btn-primary">Connect &amp; test</button>
+          </div>
+          <p class="status" id="connect-status" aria-live="polite">Not connected</p>
+        </section>
+
+        <section class="panel">
+          <h2>Sources</h2>
+          <p class="panel-lead">Pull in history from the tools you already use. ChatGPT and Antigravity need an export file.</p>
+          <div class="source-grid" id="source-grid">
+            <label class="source-card">
+              <input id="cursor-link-toggle" type="checkbox" checked />
+              <span class="source-name">Cursor</span>
+              <span class="source-meta" id="cursor-status">Checking…</span>
+            </label>
+            <label class="source-card" id="claude-card">
+              <input id="claude-code-toggle" type="checkbox" checked />
+              <span class="source-name">Claude Code</span>
+              <span class="source-meta" id="claude-status">Checking…</span>
+            </label>
+            <button type="button" class="source-card action" id="import-chatgpt-card">
+              <span class="source-name">ChatGPT</span>
+              <span class="source-meta">Import conversations.json</span>
+            </button>
+            <button type="button" class="source-card action" id="import-antigravity-card">
+              <span class="source-name">Antigravity</span>
+              <span class="source-meta" id="antigravity-status">Import JSON / Markdown export</span>
+            </button>
+          </div>
+          <label class="check tight">
+            <input id="writeback-toggle" type="checkbox" checked />
+            Write replies into Cursor transcript when continuing a Cursor chat
+          </label>
+          <div class="import-row">
+            <input id="import-file" type="file" accept=".json,.md,.txt,application/json,text/markdown,text/plain" hidden />
+            <button id="import-btn" type="button" class="ghost">Import ChatGPT / Antigravity file…</button>
+          </div>
+          <p class="status" id="import-status" aria-live="polite"></p>
+        </section>
+
+        <section class="panel">
+          <h2>Workspaces</h2>
+          <div class="row">
+            <label class="sr-only" for="workspace-path">Workspace folder path</label>
+            <input id="workspace-path" type="text" placeholder="/path/to/repo or folder" autocomplete="off" />
+            <button id="workspace-add" type="button" class="ghost">Link</button>
+          </div>
+          <div id="workspace-list" class="chip-list"></div>
+          <label>
+            Active workspace for new chats
+            <select id="workspace-select">
+              <option value="">None</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="panel meta">
+          <h2>Context</h2>
+          <p id="skills-meta" title="">Skills: —</p>
+          <p id="settings-meta" title="">Cursor settings: —</p>
+        </section>
+      </aside>
+
+      <main class="stage" id="stage">
+        <header class="stage-head">
+          <button id="mobile-back" class="ghost mobile-only" type="button" hidden>← Chats</button>
+          <div class="stage-titles">
+            <p class="eyebrow" id="active-project">Select or start a chat</p>
+            <h1 id="active-title">No conversation open</h1>
+          </div>
+          <div class="token-meter" id="token-meter" aria-live="polite" title="Tokens: input → output · total">
+            <div class="token-cell">
+              <span class="token-label">Last reply</span>
+              <span class="token-value" id="token-last">—</span>
+            </div>
+            <div class="token-cell">
+              <span class="token-label">This chat</span>
+              <span class="token-value" id="token-chat">—</span>
+            </div>
+            <div class="token-cell">
+              <span class="token-label">Session in→out</span>
+              <span class="token-value" id="token-session">0 → 0 · 0</span>
+            </div>
+          </div>
+        </header>
+
+        <p class="sync-note" id="sync-note">
+          Type <code>/</code> for skills. Import chats from Cursor, Claude Code, ChatGPT, or Antigravity.
+        </p>
+
+        <div id="messages" class="messages" aria-live="polite" aria-relevant="additions">
+          <div class="empty-stage" id="empty-stage">
+            <p class="empty-lead">Start a conversation or open one from the rail.</p>
+            <div class="empty-actions">
+              <button type="button" class="btn-primary" id="empty-new">New conversation</button>
+              <button type="button" class="ghost" id="empty-connect">Connect provider</button>
+            </div>
+          </div>
+        </div>
 
         <form id="composer" class="composer">
-          <textarea
-            id="message-input"
-            rows="3"
-            placeholder="Continue this Cursor conversation via Foundry…"
-            disabled
-          ></textarea>
-          <button id="send-btn" type="submit" disabled>Send</button>
+          <label class="composer-hint" id="composer-hint" for="message-input">Select a chat or start a new one</label>
+          <div class="composer-shell">
+            <div class="composer-input-wrap">
+              <div id="slash-menu" class="slash-menu" hidden></div>
+              <textarea
+                id="message-input"
+                rows="2"
+                placeholder="Message… or /skill-name"
+                disabled
+              ></textarea>
+            </div>
+            <button id="send-btn" type="submit" class="send-island" disabled>
+              <span>Send</span>
+              <span class="send-glyph" aria-hidden="true">↑</span>
+            </button>
+          </div>
         </form>
       </main>
     </div>
-    <script src="/static/app.js"></script>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js"></script>
+    <script defer src="/static/app.js"></script>
   </body>
 </html>
