@@ -22,7 +22,7 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260811b" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260811c" />
   </head>
   <body>
     <div class="atmosphere" aria-hidden="true">
@@ -199,7 +199,7 @@
         <div class="diff-backdrop" id="diff-backdrop" hidden></div>
 
         <form id="composer" class="composer">
-          <div class="composer-toolbar">
+          <div class="composer-shell">
             <div class="composer-controls" role="group" aria-label="Reply settings">
               <select id="mode-select" class="effort-select" aria-label="Chat mode" title="Agent writes · Soft proposes · Plan is read-only">
                 <option value="agent" selected>Agent</option>
@@ -221,13 +221,6 @@
                 <option value="ultracode">Ultracode</option>
               </select>
             </div>
-            <span class="session-chip" id="token-session" title="Session tokens" tabindex="0" hidden>
-              <span class="session-label">Session</span>
-              <span class="session-value" id="token-session-value">0</span>
-              <span class="token-tip" id="token-session-tip" aria-hidden="true"></span>
-            </span>
-          </div>
-          <div class="composer-shell">
             <div class="composer-input-wrap">
               <div id="attach-chips" class="attach-chips" hidden></div>
               <div id="slash-menu" class="slash-menu" hidden></div>
@@ -241,6 +234,11 @@
               ></textarea>
             </div>
             <div class="composer-actions">
+              <span class="session-chip" id="token-session" title="Session tokens" tabindex="0" hidden>
+                <span class="session-label">Session</span>
+                <span class="session-value" id="token-session-value">0</span>
+                <span class="token-tip" id="token-session-tip" aria-hidden="true"></span>
+              </span>
               <input
                 id="attach-input"
                 type="file"

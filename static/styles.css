@@ -1529,53 +1529,56 @@ select:focus {
   display: block;
 }
 
-.composer-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin: 0 auto 6px;
-  width: 100%;
-  max-width: min(var(--measure) + 4rem, 100%);
-  min-width: 0;
-  padding: 0 4px;
-}
-
 .composer-controls {
-  display: inline-flex;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 2px;
-  flex-wrap: wrap;
-  min-width: 0;
+  flex-shrink: 0;
+  padding: 0 2px 0 4px;
+  align-self: center;
 }
 
-.effort-select {
+.composer-controls .effort-select,
+select.effort-select {
+  width: auto;
+  max-width: 7.5rem;
+  flex: 0 0 auto;
   appearance: none;
+  -webkit-appearance: none;
   border: 0;
   background-color: transparent;
   color: var(--ink-soft);
   border-radius: 999px;
-  padding: 4px 22px 4px 8px;
+  padding: 6px 20px 6px 8px;
   font: inherit;
-  font-size: 0.76rem;
+  font-size: 0.74rem;
   font-weight: 500;
+  line-height: 1.2;
   cursor: pointer;
+  box-shadow: none;
   background-image: linear-gradient(45deg, transparent 50%, var(--ink-soft) 50%),
     linear-gradient(135deg, var(--ink-soft) 50%, transparent 50%);
-  background-position: calc(100% - 10px) calc(50% - 2px), calc(100% - 5px) calc(50% - 2px);
+  background-position: calc(100% - 9px) calc(50% - 2px), calc(100% - 4px) calc(50% - 2px);
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
   transition: color 160ms var(--ease), background-color 160ms var(--ease);
 }
 
-.effort-select:hover,
-.effort-select:focus-visible {
+.composer-controls .effort-select:hover,
+.composer-controls .effort-select:focus-visible,
+select.effort-select:hover,
+select.effort-select:focus-visible {
   color: var(--ink);
   background-color: var(--mist-2);
+  border-color: transparent;
+  box-shadow: none;
   outline: none;
 }
 
-.effort-select:focus-visible {
+.composer-controls .effort-select:focus-visible,
+select.effort-select:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
   outline-offset: 1px;
 }
@@ -1586,7 +1589,7 @@ select:focus {
 
 .session-chip {
   position: relative;
-  display: inline-flex;
+  display: none;
   align-items: baseline;
   gap: 6px;
   flex-shrink: 0;
@@ -1594,10 +1597,14 @@ select:focus {
   background: var(--mist-2);
   color: var(--ink-soft);
   border-radius: 999px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   font: inherit;
   cursor: default;
   outline: none;
+}
+
+.session-chip:not([hidden]) {
+  display: inline-flex;
 }
 
 .session-chip:focus-visible {
@@ -1935,13 +1942,13 @@ select:focus {
 
 .composer-shell {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 4px;
   align-items: end;
   width: 100%;
   max-width: min(var(--measure) + 4rem, 100%);
   margin: 0 auto;
-  padding: 4px 4px 4px 10px;
+  padding: 4px 4px 4px 6px;
   border: 1px solid var(--line-strong);
   border-radius: 22px;
   background: var(--mist);
@@ -1952,6 +1959,31 @@ select:focus {
 .composer-shell:focus-within {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--line-strong));
   box-shadow: 0 12px 32px var(--focus-glow);
+}
+
+@media (max-width: 720px) {
+  .composer-shell {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "controls controls"
+      "input actions";
+    align-items: end;
+  }
+
+  .composer-controls {
+    grid-area: controls;
+    padding: 4px 4px 0;
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .composer-input-wrap {
+    grid-area: input;
+  }
+
+  .composer-actions {
+    grid-area: actions;
+  }
 }
 
 .composer-input-wrap {
