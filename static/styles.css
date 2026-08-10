@@ -776,15 +776,15 @@ select:focus {
 
 .diff-drawer {
   position: absolute;
-  right: 18px;
-  bottom: 110px;
-  top: 90px;
-  width: min(420px, calc(100% - 36px));
+  right: 14px;
+  bottom: 100px;
+  top: 72px;
+  width: min(520px, calc(100% - 28px));
   z-index: 20;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px;
+  gap: 10px;
+  padding: 12px 12px 10px;
   border: 1px solid var(--line-strong);
   border-radius: 16px;
   background: var(--surface-raised);
@@ -825,78 +825,230 @@ select:focus {
   gap: 8px;
 }
 
-.diff-drawer-head h2 {
+.diff-drawer-title {
   margin: 0;
   font-size: 0.95rem;
   font-weight: 650;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.diff-stats {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.diff-stat-add {
+  color: #1a7f4a;
+}
+
+.diff-stat-del {
+  color: #c23b3b;
+}
+
+[data-theme="dark"] .diff-stat-add {
+  color: #3dcf84;
+}
+
+[data-theme="dark"] .diff-stat-del {
+  color: #f07178;
 }
 
 .diff-file-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: 28%;
+  max-height: 32%;
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--mist);
 }
 
-.diff-file-list button {
+.diff-file-btn {
   width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   text-align: left;
   border: 0;
-  background: var(--mist);
+  background: transparent;
   color: var(--ink);
-  border-radius: 10px;
+  border-radius: 0;
   padding: 8px 10px;
   font: inherit;
   font-size: 0.78rem;
   cursor: pointer;
+  border-bottom: 1px solid var(--line);
 }
 
-.diff-file-list button.active {
-  background: color-mix(in srgb, var(--accent) 18%, var(--mist));
+.diff-file-list li:last-child .diff-file-btn {
+  border-bottom: 0;
+}
+
+.diff-file-btn:hover,
+.diff-file-btn:focus-visible {
+  background: var(--mist-2);
+  outline: none;
+}
+
+.diff-file-btn.active {
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-raised));
+}
+
+.diff-file-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.diff-file-op,
+.diff-view-op {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 650;
+  color: var(--ink-soft);
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--mist-2);
+}
+
+.diff-file-op.op-create,
+.diff-view-op.op-create {
+  color: #1a7f4a;
+  background: color-mix(in srgb, #1a7f4a 12%, transparent);
+}
+
+.diff-file-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
 }
 
 .diff-view {
   flex: 1 1 auto;
   min-height: 0;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+}
+
+.diff-view-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--mist);
+  min-width: 0;
+}
+
+.diff-view-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--ink);
+}
+
+.diff-view-body {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   margin: 0;
-  padding: 10px;
-  border-radius: 12px;
-  background: var(--mist-2);
+  padding: 0;
   font-family: var(--font-mono);
   font-size: 0.72rem;
   line-height: 1.45;
-  white-space: pre;
+  background: var(--code-bg, #0f1412);
+  color: var(--code-fg, #e8efe9);
 }
 
 .diff-line {
-  display: block;
-  padding: 0 4px;
-  border-radius: 3px;
+  display: grid;
+  grid-template-columns: 1.6rem minmax(0, 1fr);
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  min-height: 1.35em;
+}
+
+.diff-marker {
+  text-align: center;
+  user-select: none;
+  opacity: 0.85;
+  padding: 0 2px;
+}
+
+.diff-code {
+  white-space: pre;
+  overflow-wrap: normal;
+  padding-right: 10px;
 }
 
 .diff-add {
+  background: color-mix(in srgb, #1f7a4c 28%, transparent);
+}
+
+.diff-add .diff-marker {
+  color: #3dcf84;
   background: color-mix(in srgb, #1f7a4c 18%, transparent);
-  color: color-mix(in srgb, #1f7a4c 70%, var(--ink));
 }
 
 .diff-del {
-  background: color-mix(in srgb, var(--danger) 16%, transparent);
-  color: color-mix(in srgb, var(--danger) 75%, var(--ink));
+  background: color-mix(in srgb, #c23b3b 26%, transparent);
+}
+
+.diff-del .diff-marker {
+  color: #f07178;
+  background: color-mix(in srgb, #c23b3b 16%, transparent);
 }
 
 .diff-hunk {
-  color: var(--ink-soft);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: #8fb4ff;
+  background: color-mix(in srgb, #3b6fd4 18%, transparent);
 }
 
-.diff-file {
-  font-weight: 650;
-  color: var(--ink-soft);
+.diff-hunk .diff-marker {
+  visibility: hidden;
+}
+
+.diff-file,
+.diff-meta {
+  color: color-mix(in srgb, var(--code-fg, #e8efe9) 70%, transparent);
+  background: color-mix(in srgb, #ffffff 6%, transparent);
+  font-weight: 600;
+}
+
+.diff-file .diff-marker,
+.diff-meta .diff-marker {
+  visibility: hidden;
 }
 
 .checkpoint-wrap {
@@ -973,10 +1125,54 @@ select:focus {
   cursor: pointer;
 }
 
-.files-changed-names {
+.files-changed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  margin-top: 2px;
+  padding: 6px 8px;
+  border-radius: 12px;
+  background: var(--mist);
+  border: 1px solid var(--line);
+}
+
+.files-changed-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 4px 6px;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 8px;
+}
+
+.files-changed-row:hover,
+.files-changed-row:focus-visible {
+  background: var(--surface-raised);
+  outline: none;
+}
+
+.files-changed-path {
+  font-family: var(--font-mono);
   font-size: 0.72rem;
   color: var(--ink-soft);
-  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.files-changed-more {
+  font-size: 0.7rem;
+  color: var(--ink-soft);
+  padding: 2px 6px;
 }
 
 .files-changed.accepted .files-changed-btn {

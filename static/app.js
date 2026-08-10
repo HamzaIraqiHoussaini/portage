@@ -688,30 +688,93 @@ function createBlocksPanel(blocks, { checkpointId = null } = {}) {
   return wrap.childNodes.length ? wrap : null;
 }
 
+function countDiffStats(diffText) {
+  let added = 0;
+  let removed = 0;
+  for (const line of String(diffText || "").split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@")) continue;
+    if (line.startsWith("+")) added += 1;
+    else if (line.startsWith("-")) removed += 1;
+  }
+  return { added, removed };
+}
+
+function shortChangePath(path) {
+  const raw = String(path || "file").replace(/\\/g, "/");
+  const parts = raw.split("/").filter(Boolean);
+  if (parts.length <= 2) return raw;
+  return parts.slice(-2).join("/");
+}
+
+function aggregateChangeStats(changes) {
+  let added = 0;
+  let removed = 0;
+  for (const c of changes || []) {
+    const s = countDiffStats(c?.diff);
+    added += s.added;
+    removed += s.removed;
+  }
+  return { added, removed };
+}
+
+function createStatEl(added, removed) {
+  const wrap = document.createElement("span");
+  wrap.className = "diff-stats";
+  const addEl = document.createElement("span");
+  addEl.className = "diff-stat-add";
+  addEl.textContent = `+${added}`;
+  const delEl = document.createElement("span");
+  delEl.className = "diff-stat-del";
+  delEl.textContent = `−${removed}`;
+  wrap.appendChild(addEl);
+  wrap.appendChild(delEl);
+  return wrap;
+}
+
 function createFilesChangedStrip(changes, { checkpointId = null } = {}) {
   const strip = document.createElement("div");
   strip.className = "files-changed";
   const pending = (changes || []).filter((c) => c && c.pending && c.patch_id);
   const applied = (changes || []).filter((c) => c && !c.pending);
+  const totals = aggregateChangeStats(changes);
   const label = document.createElement("button");
   label.type = "button";
   label.className = "files-changed-btn";
+  const fileWord = `${changes.length} file${changes.length === 1 ? "" : "s"}`;
   if (pending.length && !applied.length) {
-    label.textContent = `${pending.length} proposed change${pending.length === 1 ? "" : "s"}`;
+    label.textContent = `${pending.length} proposed`;
   } else if (pending.length) {
-    label.textContent = `${changes.length} file${changes.length === 1 ? "" : "s"} (${pending.length} pending)`;
+    label.textContent = `${fileWord} · ${pending.length} pending`;
   } else {
-    label.textContent = `${changes.length} file${changes.length === 1 ? "" : "s"} changed`;
+    label.textContent = fileWord;
   }
   label.addEventListener("click", () => openDiffDrawer(changes));
   strip.appendChild(label);
-  const names = document.createElement("span");
-  names.className = "files-changed-names";
-  names.textContent = changes
-    .map((c) => c.path)
-    .filter(Boolean)
-    .slice(0, 4)
-    .join(", ");
+  if (totals.added || totals.removed) {
+    strip.appendChild(createStatEl(totals.added, totals.removed));
+  }
+  const names = document.createElement("div");
+  names.className = "files-changed-list";
+  (changes || []).slice(0, 6).forEach((c) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "files-changed-row";
+    const path = document.createElement("span");
+    path.className = "files-changed-path";
+    path.textContent = shortChangePath(c.path);
+    path.title = c.path || "";
+    row.appendChild(path);
+    const s = countDiffStats(c.diff);
+    row.appendChild(createStatEl(s.added, s.removed));
+    row.addEventListener("click", () => openDiffDrawer(changes, c.path));
+    names.appendChild(row);
+  });
+  if ((changes || []).length > 6) {
+    const more = document.createElement("span");
+    more.className = "files-changed-more";
+    more.textContent = `+${changes.length - 6} more`;
+    names.appendChild(more);
+  }
   strip.appendChild(names);
   if (pending.length) {
     const accept = document.createElement("button");
@@ -811,44 +874,123 @@ async function rejectPendingPatches(pending, stripEl = null) {
 
 function renderDiffHtml(diffText) {
   const lines = String(diffText || "").split("\n");
+  if (!lines.length || (lines.length === 1 && !lines[0])) {
+    return `<span class="diff-line diff-meta">(no diff available)</span>`;
+  }
   return lines
     .map((line) => {
       let cls = "diff-line";
-      if (line.startsWith("+++") || line.startsWith("---")) cls += " diff-file";
-      else if (line.startsWith("@@")) cls += " diff-hunk";
-      else if (line.startsWith("+")) cls += " diff-add";
-      else if (line.startsWith("-")) cls += " diff-del";
-      return `<span class="${cls}">${escapeHtml(line) || " "}</span>`;
+      let marker = " ";
+      let body = line;
+      if (line.startsWith("+++") || line.startsWith("---")) {
+        cls += " diff-file";
+        body = line;
+      } else if (line.startsWith("@@")) {
+        cls += " diff-hunk";
+        body = line;
+      } else if (line.startsWith("+")) {
+        cls += " diff-add";
+        marker = "+";
+        body = line.slice(1);
+      } else if (line.startsWith("-")) {
+        cls += " diff-del";
+        marker = "−";
+        body = line.slice(1);
+      } else if (line.startsWith(" ")) {
+        body = line.slice(1);
+      }
+      const safeBody = escapeHtml(body);
+      return (
+        `<span class="${cls}">` +
+        `<span class="diff-marker" aria-hidden="true">${marker}</span>` +
+        `<span class="diff-code">${safeBody || "&nbsp;"}</span>` +
+        `</span>`
+      );
     })
-    .join("\n");
+    .join("");
 }
 
-function openDiffDrawer(changes) {
+function openDiffDrawer(changes, focusPath = null) {
   const drawer = $("diff-drawer");
   const list = $("diff-file-list");
   const view = $("diff-view");
   const backdrop = $("diff-backdrop");
+  const headTitle = drawer?.querySelector(".diff-drawer-title");
   if (!drawer || !list || !view) return;
   state.lastFileChanges = changes || [];
   list.innerHTML = "";
   view.innerHTML = "";
-  (changes || []).forEach((c, i) => {
+  const totals = aggregateChangeStats(changes);
+  if (headTitle) {
+    headTitle.replaceChildren();
+    const title = document.createElement("span");
+    title.textContent = "Files changed";
+    headTitle.appendChild(title);
+    if (totals.added || totals.removed) {
+      headTitle.appendChild(createStatEl(totals.added, totals.removed));
+    }
+  }
+
+  const items = changes || [];
+  let activeIdx = 0;
+  if (focusPath) {
+    const found = items.findIndex((c) => c.path === focusPath);
+    if (found >= 0) activeIdx = found;
+  }
+
+  const showFile = (idx) => {
+    const c = items[idx];
+    if (!c) return;
+    list.querySelectorAll(".diff-file-btn").forEach((b, i) => {
+      b.classList.toggle("active", i === idx);
+    });
+    const stats = countDiffStats(c.diff);
+    const meta = document.createElement("div");
+    meta.className = "diff-view-meta";
+    const pathEl = document.createElement("span");
+    pathEl.className = "diff-view-path";
+    pathEl.textContent = c.path || "file";
+    pathEl.title = c.path || "";
+    meta.appendChild(pathEl);
+    const op = document.createElement("span");
+    op.className = `diff-view-op op-${c.op || "update"}`;
+    op.textContent = c.op || "update";
+    meta.appendChild(op);
+    meta.appendChild(createStatEl(stats.added, stats.removed));
+    const body = document.createElement("div");
+    body.className = "diff-view-body";
+    body.innerHTML = renderDiffHtml(c.diff || "");
+    view.replaceChildren(meta, body);
+  };
+
+  items.forEach((c, i) => {
     const li = document.createElement("li");
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.textContent = `${c.op || "update"} · ${c.path || "file"}`;
-    btn.addEventListener("click", () => {
-      list.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-      view.innerHTML = renderDiffHtml(c.diff || "(no diff available)");
-    });
-    if (i === 0) {
-      btn.classList.add("active");
-      view.innerHTML = renderDiffHtml(c.diff || "(no diff available)");
-    }
+    btn.className = "diff-file-btn";
+    const left = document.createElement("span");
+    left.className = "diff-file-main";
+    const op = document.createElement("span");
+    op.className = `diff-file-op op-${c.op || "update"}`;
+    op.textContent = c.op || "update";
+    const path = document.createElement("span");
+    path.className = "diff-file-path";
+    path.textContent = shortChangePath(c.path);
+    path.title = c.path || "";
+    left.appendChild(op);
+    left.appendChild(path);
+    btn.appendChild(left);
+    const s = countDiffStats(c.diff);
+    btn.appendChild(createStatEl(s.added, s.removed));
+    btn.addEventListener("click", () => showFile(i));
+    if (i === activeIdx) btn.classList.add("active");
     li.appendChild(btn);
     list.appendChild(li);
   });
+
+  if (items.length) showFile(activeIdx);
+  else view.innerHTML = `<div class="diff-view-body"><span class="diff-line diff-meta">(no changes)</span></div>`;
+
   drawer.hidden = false;
   if (backdrop) backdrop.hidden = false;
 }
@@ -882,7 +1024,7 @@ async function restoreCheckpoint(checkpointId, stripEl = null) {
       }
       const reject = stripEl.querySelector(".reject-btn");
       if (reject) reject.remove();
-      const names = stripEl.querySelector(".files-changed-names");
+      const names = stripEl.querySelector(".files-changed-list");
       if (names) names.textContent = "Files restored from checkpoint";
     }
     closeDiffDrawer();
