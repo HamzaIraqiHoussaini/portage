@@ -55,6 +55,7 @@ class ChatBody(BaseModel):
     workspace: str | None = None
     transcript_path: str | None = None
     effort: str | None = None
+    mode: str | None = None
 
 
 class WorkspaceBody(BaseModel):
@@ -433,6 +434,7 @@ async def send_chat_stream(body: ChatBody, request: Request):
                 "forked": ctx["forked"],
                 "skill": ctx["skill_name"],
                 "agent": bool(ctx.get("workspace")),
+                "mode": ctx.get("mode") or "agent",
             }
         )
         full_parts: list[str] = []
@@ -450,6 +452,7 @@ async def send_chat_stream(body: ChatBody, request: Request):
                 chat_id=ctx["chat_id"] if ctx.get("source") == "local" else None,
                 cancel_check=lambda: disconnected["v"],
                 effort=ctx.get("effort"),
+                mode=ctx.get("mode"),
             ):
                 if await request.is_disconnected():
                     disconnected["v"] = True
@@ -461,7 +464,25 @@ async def send_chat_stream(body: ChatBody, request: Request):
                     if text:
                         full_parts.append(text)
                         yield _sse({"type": "delta", "text": text})
-                elif etype in ("tool_start", "tool_result", "file_change", "checkpoint"):
+                elif etype == "thinking":
+                    text = str(event.get("text") or "")
+                    if text:
+                        yield _sse(
+                            {
+                                "type": "thinking",
+                                "text": text,
+                                "subagent_id": event.get("subagent_id"),
+                            }
+                        )
+                elif etype in (
+                    "tool_start",
+                    "tool_result",
+                    "file_change",
+                    "checkpoint",
+                    "subagent_start",
+                    "subagent_delta",
+                    "subagent_done",
+                ):
                     if etype == "checkpoint" and event.get("checkpoint_id"):
                         checkpoint_id = str(event.get("checkpoint_id"))
                     if etype == "file_change":
@@ -626,13 +647,28 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
         merged.pop(0)
 
     extras = [workspaces.workspace_context_block(workspace)]
+    mode = agent_loop.normalize_mode(body.mode)
     if workspace:
-        extras.append(
-            "# Agent tools\n\n"
-            "You can use tools to list, read, search, edit files, and run allowlisted commands "
-            "inside the linked workspace only. Prefer apply_patch for file changes. "
-            "For commands use run_command with an argv array (no shell). Keep edits minimal."
-        )
+        if mode == "plan":
+            extras.append(
+                "# Plan mode\n\n"
+                "You are in plan mode. Explore with read-only tools "
+                "(list_dir, read_file, grep, run_command for inspection). "
+                "Do NOT edit or create files. "
+                "You may spawn_subagent for parallel research. "
+                "Deliver a clear implementation plan: goals, steps, files to touch, "
+                "risks, and open questions. Wait for the user to switch to Agent mode "
+                "before making changes."
+            )
+        else:
+            extras.append(
+                "# Agent tools\n\n"
+                "You can use tools to list, read, search, edit files, and run allowlisted "
+                "commands inside the linked workspace only. Prefer apply_patch for file "
+                "changes. For commands use run_command with an argv array (no shell). "
+                "Use spawn_subagent for focused parallel research when helpful. "
+                "Keep edits minimal."
+            )
     system = skills.build_system_preamble(
         s,
         include_cursor_settings=bool(s.cursor_link_enabled),
@@ -652,6 +688,7 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
         "cursor_thread": cursor_thread,
         "workspace": workspace,
         "effort": providers.normalize_effort(body.effort),
+        "mode": mode,
     }
 
 

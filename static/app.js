@@ -1,5 +1,6 @@
 const SESSION_KEY = "portage.sessionTokens";
 const EFFORT_KEY = "portage.effort";
+const MODE_KEY = "portage.mode";
 
 const state = {
   chatId: null,
@@ -21,6 +22,7 @@ const state = {
   mentionIndex: 0,
   lastFileChanges: [],
   effort: loadEffort(),
+  mode: loadMode(),
 };
 
 function loadEffort() {
@@ -42,10 +44,34 @@ function saveEffort(value) {
   }
 }
 
+function loadMode() {
+  try {
+    const v = localStorage.getItem(MODE_KEY);
+    return v === "plan" ? "plan" : "agent";
+  } catch {
+    return "agent";
+  }
+}
+
+function saveMode(value) {
+  state.mode = value === "plan" ? "plan" : "agent";
+  try {
+    localStorage.setItem(MODE_KEY, state.mode);
+  } catch {
+    /* ignore */
+  }
+}
+
 function syncEffortSelect() {
   const el = $("effort-select");
   if (!el) return;
   el.value = state.effort || "high";
+}
+
+function syncModeSelect() {
+  const el = $("mode-select");
+  if (!el) return;
+  el.value = state.mode || "agent";
 }
 
 const MATH_DELIMITERS = [
@@ -497,10 +523,27 @@ function createBlocksPanel(blocks, { checkpointId = null } = {}) {
       const details = document.createElement("details");
       details.className = "think-card";
       const summary = document.createElement("summary");
-      summary.textContent = "Thinking";
+      summary.textContent = block.subagent_id ? "Subagent thinking" : "Thinking";
       details.appendChild(summary);
       const pre = document.createElement("pre");
-      pre.textContent = String(block.text || "").slice(0, 4000);
+      pre.textContent = String(block.text || "").slice(0, 12000);
+      details.appendChild(pre);
+      wrap.appendChild(details);
+    } else if (block.type === "subagent_start" || block.type === "subagent_done") {
+      const details = document.createElement("details");
+      details.className = "subagent-card";
+      if (block.is_error) details.classList.add("is-error");
+      const summary = document.createElement("summary");
+      const label = block.label || "subagent";
+      summary.textContent =
+        block.type === "subagent_start"
+          ? `Subagent · ${label}`
+          : block.is_error
+            ? `Subagent failed · ${label}`
+            : `Subagent · ${label}`;
+      details.appendChild(summary);
+      const pre = document.createElement("pre");
+      pre.textContent = String(block.summary || block.prompt || "").slice(0, 8000);
       details.appendChild(pre);
       wrap.appendChild(details);
     } else if (block.type === "tool_use") {
@@ -820,6 +863,76 @@ function appendToolTimeline(timeline, event) {
       if (st) st.textContent = event.is_error ? "error" : "done";
       row.classList.toggle("is-error", !!event.is_error);
     }
+  }
+}
+
+function appendThinkingTimeline(timeline, text, { subagentId = null } = {}) {
+  if (!timeline || !text) return;
+  let details = [...timeline.querySelectorAll(".think-card.live")].find((el) =>
+    subagentId ? el.dataset.subagentId === subagentId : !el.dataset.subagentId
+  );
+  if (!details) {
+    details = document.createElement("details");
+    details.className = "think-card live";
+    details.open = true;
+    if (subagentId) details.dataset.subagentId = subagentId;
+    const summary = document.createElement("summary");
+    summary.textContent = subagentId ? "Subagent thinking" : "Thinking";
+    details.appendChild(summary);
+    const pre = document.createElement("pre");
+    details.appendChild(pre);
+    timeline.appendChild(details);
+  }
+  const pre = details.querySelector("pre");
+  if (pre) {
+    const next = (pre.textContent || "") + text;
+    pre.textContent = next.length > 16000 ? next.slice(-16000) : next;
+  }
+}
+
+function appendSubagentTimeline(timeline, event) {
+  if (!timeline) return;
+  if (event.type === "subagent_start") {
+    const details = document.createElement("details");
+    details.className = "subagent-card live";
+    details.open = true;
+    details.dataset.subagentId = event.id || "";
+    const summary = document.createElement("summary");
+    summary.textContent = `Subagent · ${event.label || "working"}…`;
+    details.appendChild(summary);
+    const pre = document.createElement("pre");
+    pre.textContent = String(event.prompt || "");
+    details.appendChild(pre);
+    timeline.appendChild(details);
+  } else if (event.type === "subagent_delta") {
+    const details =
+      [...timeline.querySelectorAll(".subagent-card")].find(
+        (el) => el.dataset.subagentId === event.id
+      ) || null;
+    if (!details) return;
+    const pre = details.querySelector("pre");
+    if (pre) {
+      const base = pre.dataset.streamed === "1" ? pre.textContent || "" : "";
+      pre.dataset.streamed = "1";
+      const next = base + (event.text || "");
+      pre.textContent = next.length > 12000 ? next.slice(-12000) : next;
+    }
+  } else if (event.type === "subagent_done") {
+    const details =
+      [...timeline.querySelectorAll(".subagent-card")].find(
+        (el) => el.dataset.subagentId === event.id
+      ) || null;
+    if (!details) return;
+    details.classList.remove("live");
+    details.classList.toggle("is-error", !!event.is_error);
+    const summary = details.querySelector("summary");
+    if (summary) {
+      summary.textContent = event.is_error
+        ? `Subagent failed · ${event.label || ""}`
+        : `Subagent · ${event.label || "done"}`;
+    }
+    const pre = details.querySelector("pre");
+    if (pre && event.summary) pre.textContent = String(event.summary).slice(0, 8000);
   }
 }
 
@@ -1382,6 +1495,7 @@ async function sendMessage(event) {
         workspace: $("workspace-select").value || null,
         transcript_path: state.transcriptPath,
         effort: state.effort || $("effort-select")?.value || "high",
+        mode: state.mode || $("mode-select")?.value || "agent",
       }),
       signal: controller.signal,
     });
@@ -1437,8 +1551,18 @@ async function sendMessage(event) {
         } else if (event.type === "delta" && event.text) {
           assembled += event.text;
           schedulePaint();
+        } else if (event.type === "thinking" && event.text) {
+          appendThinkingTimeline(timeline, event.text, { subagentId: event.subagent_id || null });
+          scrollMessages(root);
         } else if (event.type === "tool_start" || event.type === "tool_result") {
           appendToolTimeline(timeline, event);
+          scrollMessages(root);
+        } else if (
+          event.type === "subagent_start" ||
+          event.type === "subagent_delta" ||
+          event.type === "subagent_done"
+        ) {
+          appendSubagentTimeline(timeline, event);
           scrollMessages(root);
         } else if (event.type === "file_change") {
           liveFileChanges.push({
@@ -1740,6 +1864,10 @@ on("effort-select", "change", () => {
   const el = $("effort-select");
   if (el) saveEffort(el.value);
 });
+on("mode-select", "change", () => {
+  const el = $("mode-select");
+  if (el) saveMode(el.value);
+});
 on("diff-close", "click", closeDiffDrawer);
 on("diff-backdrop", "click", closeDiffDrawer);
 on("checkpoint-btn", "click", () => toggleCheckpointMenu().catch(() => {}));
@@ -1853,6 +1981,7 @@ window.addEventListener("resize", () => {
   const saved = storedTheme();
   applyTheme(saved || currentTheme(), { persist: false });
   syncEffortSelect();
+  syncModeSelect();
   setStreamingUi(false);
   setComposerEnabled(false);
   showChatView(false);

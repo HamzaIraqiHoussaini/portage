@@ -985,12 +985,26 @@ select:focus {
 
 .tool-card,
 .tool-result-card,
-.think-card {
+.think-card,
+.subagent-card {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 8px 10px;
   background: var(--mist);
   font-size: 0.78rem;
+}
+
+.subagent-card {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+}
+
+.subagent-card.is-error {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+}
+
+.think-card.live summary,
+.subagent-card.live summary {
+  color: var(--accent-ink);
 }
 
 .tool-card {
@@ -1024,12 +1038,13 @@ select:focus {
 }
 
 .tool-result-card pre,
-.think-card pre {
+.think-card pre,
+.subagent-card pre {
   margin: 8px 0 0;
   white-space: pre-wrap;
   font-family: var(--font-mono);
   font-size: 0.72rem;
-  max-height: 180px;
+  max-height: 220px;
   overflow: auto;
 }
 

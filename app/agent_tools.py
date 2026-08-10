@@ -118,7 +118,32 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["command"],
         },
     },
+    {
+        "name": "spawn_subagent",
+        "description": (
+            "Spawn a focused subagent to research or explore part of the workspace in parallel. "
+            "Pass a clear prompt and optional short label. The subagent returns a text summary. "
+            "Use for investigation only — it cannot nest further subagents."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "Task instructions for the subagent.",
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Short UI label (e.g. 'auth routes').",
+                },
+            },
+            "required": ["prompt"],
+        },
+    },
 ]
+
+WRITE_TOOLS = frozenset({"apply_patch"})
+SUBAGENT_TOOLS = frozenset({"spawn_subagent"})
 
 
 class ToolError(RuntimeError):
@@ -167,9 +192,19 @@ def unified_diff(path_label: str, before: str, after: str) -> str:
     return text
 
 
-def execute_tool(name: str, raw_input: dict[str, Any] | None, *, workspace: str) -> dict[str, Any]:
+def execute_tool(
+    name: str,
+    raw_input: dict[str, Any] | None,
+    *,
+    workspace: str,
+    mode: str = "agent",
+) -> dict[str, Any]:
     """Run one tool. Returns {content, file_change?}."""
     args = raw_input if isinstance(raw_input, dict) else {}
+    if name in SUBAGENT_TOOLS:
+        raise ToolError("spawn_subagent is handled by the agent loop, not execute_tool")
+    if mode == "plan" and name in WRITE_TOOLS:
+        raise ToolError("Plan mode is read-only — switch to Agent mode to edit files.")
     if name == "list_dir":
         return _list_dir(workspace, str(args.get("path") or "."))
     if name == "read_file":
@@ -392,13 +427,22 @@ def _apply_patch(workspace: str, rel: str, content: str) -> dict[str, Any]:
     return {"content": summary, "file_change": change}
 
 
-def anthropic_tools_payload() -> list[dict[str, Any]]:
-    return list(TOOL_DEFINITIONS)
+def anthropic_tools_payload(
+    *,
+    mode: str = "agent",
+    allow_subagents: bool = True,
+) -> list[dict[str, Any]]:
+    tools = list(TOOL_DEFINITIONS)
+    if mode == "plan":
+        tools = [t for t in tools if t["name"] not in WRITE_TOOLS]
+    if not allow_subagents:
+        tools = [t for t in tools if t["name"] not in SUBAGENT_TOOLS]
+    return tools
 
 
-def bedrock_tool_config() -> dict[str, Any]:
+def bedrock_tool_config(*, mode: str = "agent", allow_subagents: bool = True) -> dict[str, Any]:
     tools = []
-    for t in TOOL_DEFINITIONS:
+    for t in anthropic_tools_payload(mode=mode, allow_subagents=allow_subagents):
         tools.append(
             {
                 "toolSpec": {

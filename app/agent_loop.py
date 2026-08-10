@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, AsyncIterator
 
 from . import agent_tools, checkpoints, providers
@@ -10,6 +9,13 @@ from .config import Settings
 from .providers import ProviderError
 
 MAX_TOOL_ROUNDS = 12
+MAX_SUBAGENT_ROUNDS = 6
+MAX_SUBAGENT_DEPTH = 1
+
+
+def normalize_mode(raw: str | None) -> str:
+    value = (raw or "agent").strip().lower()
+    return "plan" if value == "plan" else "agent"
 
 
 async def run_agent_stream(
@@ -21,12 +27,16 @@ async def run_agent_stream(
     chat_id: str | None = None,
     cancel_check=None,
     effort: str | None = None,
+    mode: str | None = None,
+    depth: int = 0,
 ) -> AsyncIterator[dict[str, Any]]:
     """
     Yield events:
-      delta, tool_start, tool_result, file_change, done, error
+      delta, thinking, tool_start, tool_result, file_change,
+      subagent_start, subagent_delta, subagent_done, done, error
     When workspace is set, tools are enabled; otherwise text-only stream.
     """
+    agent_mode = normalize_mode(mode)
     if not workspace:
         async for event in providers.stream_chat_completion(
             _as_text_messages(messages),
@@ -39,6 +49,11 @@ async def run_agent_stream(
             yield event
         return
 
+    allow_subagents = depth < MAX_SUBAGENT_DEPTH
+    tools = agent_tools.anthropic_tools_payload(
+        mode=agent_mode,
+        allow_subagents=allow_subagents,
+    )
     working: list[dict[str, Any]] = [dict(m) for m in messages]
     usage_acc = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     text_parts: list[str] = []
@@ -47,8 +62,9 @@ async def run_agent_stream(
     checkpoint_id: str | None = None
     model_name = settings.foundry_model if settings.provider != "aws" else settings.aws_model_id
     cancelled = False
+    max_rounds = MAX_SUBAGENT_ROUNDS if depth > 0 else MAX_TOOL_ROUNDS
 
-    for _round in range(MAX_TOOL_ROUNDS):
+    for _round in range(max_rounds):
         if cancel_check and cancel_check():
             cancelled = True
             break
@@ -57,8 +73,10 @@ async def run_agent_stream(
                 working,
                 system=system,
                 settings=settings,
-                tools=agent_tools.anthropic_tools_payload(),
+                tools=tools,
                 effort=effort,
+                mode=agent_mode,
+                allow_subagents=allow_subagents,
             )
         except ProviderError as e:
             yield {"type": "error", "detail": str(e)}
@@ -90,6 +108,7 @@ async def run_agent_stream(
                 think = str(block.get("thinking") or block.get("text") or "")
                 if think.strip():
                     blocks.append({"type": "thinking", "text": think})
+                    yield {"type": "thinking", "text": think}
             elif btype == "tool_use":
                 tool_uses.append(block)
                 blocks.append(
@@ -116,11 +135,15 @@ async def run_agent_stream(
             tool_id = str(tu.get("id") or name)
             raw_input = tu.get("input") if isinstance(tu.get("input"), dict) else {}
             safe_input: dict[str, Any] = {}
-            for key in ("path", "pattern"):
+            for key in ("path", "pattern", "label"):
                 if key in raw_input:
                     safe_input[key] = raw_input.get(key)
             if name == "run_command" and isinstance(raw_input.get("command"), list):
                 safe_input["command"] = [str(x) for x in raw_input["command"][:20]]
+            if name == "spawn_subagent":
+                prompt_preview = str(raw_input.get("prompt") or "")[:120]
+                if prompt_preview:
+                    safe_input["prompt"] = prompt_preview
             yield {
                 "type": "tool_start",
                 "id": tool_id,
@@ -128,28 +151,58 @@ async def run_agent_stream(
                 "input": safe_input,
             }
 
-            if name == "apply_patch" and chat_id and raw_input.get("path"):
-                checkpoint_id = checkpoints.snapshot_before_write(
-                    chat_id=chat_id,
-                    workspace=workspace,
-                    rel_path=str(raw_input.get("path")),
-                    settings=settings,
-                    checkpoint_id=checkpoint_id,
-                )
-                yield {"type": "checkpoint", "checkpoint_id": checkpoint_id}
+            content = ""
+            is_err = False
 
-            try:
-                out = agent_tools.execute_tool(name, raw_input, workspace=workspace)
-                content = str(out.get("content") or "")
-                is_err = False
-                fc = out.get("file_change")
-                if isinstance(fc, dict):
-                    file_changes.append(fc)
-                    blocks.append({"type": "file_change", **fc})
-                    yield {"type": "file_change", **fc, "checkpoint_id": checkpoint_id}
-            except agent_tools.ToolError as e:
-                content = str(e)
-                is_err = True
+            if name == "spawn_subagent":
+                async for ev in _run_spawned_subagent_events(
+                    raw_input,
+                    tool_id=tool_id,
+                    system=system,
+                    settings=settings,
+                    workspace=workspace,
+                    cancel_check=cancel_check,
+                    effort=effort,
+                    mode=agent_mode,
+                    depth=depth,
+                    usage_acc=usage_acc,
+                    blocks=blocks,
+                ):
+                    if ev.get("_result"):
+                        content = str(ev.get("content") or "")
+                        is_err = bool(ev.get("is_error"))
+                    else:
+                        yield ev
+                    if cancel_check and cancel_check():
+                        cancelled = True
+                        break
+                if cancelled:
+                    break
+            else:
+                if name == "apply_patch" and chat_id and raw_input.get("path"):
+                    checkpoint_id = checkpoints.snapshot_before_write(
+                        chat_id=chat_id,
+                        workspace=workspace,
+                        rel_path=str(raw_input.get("path")),
+                        settings=settings,
+                        checkpoint_id=checkpoint_id,
+                    )
+                    yield {"type": "checkpoint", "checkpoint_id": checkpoint_id}
+
+                try:
+                    out = agent_tools.execute_tool(
+                        name, raw_input, workspace=workspace, mode=agent_mode
+                    )
+                    content = str(out.get("content") or "")
+                    is_err = False
+                    fc = out.get("file_change")
+                    if isinstance(fc, dict):
+                        file_changes.append(fc)
+                        blocks.append({"type": "file_change", **fc})
+                        yield {"type": "file_change", **fc, "checkpoint_id": checkpoint_id}
+                except agent_tools.ToolError as e:
+                    content = str(e)
+                    is_err = True
 
             # Don't push full apply_patch bodies on the wire.
             yield {
@@ -201,7 +254,134 @@ async def run_agent_stream(
         "file_changes": file_changes,
         "blocks": blocks,
         "checkpoint_id": checkpoint_id,
+        "mode": agent_mode,
     }
+
+
+async def _run_spawned_subagent_events(
+    raw_input: dict[str, Any],
+    *,
+    tool_id: str,
+    system: str,
+    settings: Settings,
+    workspace: str,
+    cancel_check,
+    effort: str | None,
+    mode: str,
+    depth: int,
+    usage_acc: dict[str, int],
+    blocks: list[dict[str, Any]],
+) -> AsyncIterator[dict[str, Any]]:
+    prompt = str(raw_input.get("prompt") or "").strip()
+    label = str(raw_input.get("label") or "subagent").strip()[:80] or "subagent"
+    if not prompt:
+        yield {"_result": True, "content": "spawn_subagent requires a prompt", "is_error": True}
+        return
+    if depth >= MAX_SUBAGENT_DEPTH:
+        yield {
+            "_result": True,
+            "content": "Nested subagents are not allowed (max depth reached).",
+            "is_error": True,
+        }
+        return
+
+    yield {
+        "type": "subagent_start",
+        "id": tool_id,
+        "label": label,
+        "prompt": prompt[:200],
+    }
+    blocks.append({"type": "subagent_start", "id": tool_id, "label": label, "prompt": prompt[:200]})
+
+    sub_system = (
+        f"{system}\n\n# Subagent\n\n"
+        f"You are a focused subagent labeled `{label}`. "
+        "Complete only the assigned research task. Be concise. "
+        "Do not spawn further subagents. Return a clear summary of findings."
+    )
+    sub_messages = [{"role": "user", "content": prompt}]
+    summary_parts: list[str] = []
+    thinking_parts: list[str] = []
+    err_detail: str | None = None
+
+    async for event in run_agent_stream(
+        sub_messages,
+        system=sub_system,
+        settings=settings,
+        workspace=workspace,
+        chat_id=None,
+        cancel_check=cancel_check,
+        effort=effort,
+        mode=mode,
+        depth=depth + 1,
+    ):
+        etype = event.get("type")
+        if etype == "delta":
+            t = str(event.get("text") or "")
+            if t:
+                summary_parts.append(t)
+                yield {"type": "subagent_delta", "id": tool_id, "text": t}
+        elif etype == "thinking":
+            t = str(event.get("text") or "")
+            if t:
+                thinking_parts.append(t)
+                yield {"type": "thinking", "text": t, "subagent_id": tool_id}
+        elif etype in ("tool_start", "tool_result"):
+            yield {**event, "subagent_id": tool_id}
+        elif etype == "error":
+            err_detail = str(event.get("detail") or "Subagent failed")
+            break
+        elif etype == "done":
+            usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
+            for k in ("input_tokens", "output_tokens", "total_tokens"):
+                usage_acc[k] = usage_acc.get(k, 0) + int(usage.get(k) or 0)
+            done_text = str(event.get("text") or "").strip()
+            if done_text:
+                summary_parts = [done_text]
+            break
+
+    if err_detail:
+        yield {
+            "type": "subagent_done",
+            "id": tool_id,
+            "label": label,
+            "is_error": True,
+            "summary": err_detail,
+        }
+        blocks.append(
+            {
+                "type": "subagent_done",
+                "id": tool_id,
+                "label": label,
+                "is_error": True,
+                "summary": err_detail,
+            }
+        )
+        yield {"_result": True, "content": err_detail, "is_error": True}
+        return
+
+    summary = "".join(summary_parts).strip() or "(Subagent returned no text.)"
+    if thinking_parts:
+        blocks.append(
+            {"type": "thinking", "text": "".join(thinking_parts), "subagent_id": tool_id}
+        )
+    yield {
+        "type": "subagent_done",
+        "id": tool_id,
+        "label": label,
+        "is_error": False,
+        "summary": summary[:8000],
+    }
+    blocks.append(
+        {
+            "type": "subagent_done",
+            "id": tool_id,
+            "label": label,
+            "is_error": False,
+            "summary": summary[:8000],
+        }
+    )
+    yield {"_result": True, "content": summary[:8000], "is_error": False}
 
 
 def _as_text_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:

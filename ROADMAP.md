@@ -8,6 +8,8 @@ Shipped in this program: bottom composer, workspace agent tools + diffs, rich Cu
 - Allowlisted `run_command` under workspace cwd (no shell; git limited to status/diff/log/…)
 - Symlink-safe workspace walks for grep / file index
 - Checkpoint list UI in the chat header (restore with confirm)
+- Effort selector + visible thinking (summarized display when the model supports it)
+- Plan mode (read-only tools) and `spawn_subagent` for focused research
 
 ## Explicitly out of scope (for now)
 

@@ -120,6 +120,7 @@ def apply_effort_to_payload(
     *,
     effort: str | None,
     settings: Settings,
+    include_thinking_display: bool = True,
 ) -> dict[str, Any]:
     """Mutate Foundry/Anthropic Messages payload for effort + adaptive thinking."""
     level = normalize_effort(effort)
@@ -129,7 +130,11 @@ def apply_effort_to_payload(
         return payload
 
     api_effort = EFFORT_API[level]
-    payload["thinking"] = {"type": "adaptive"}
+    # Newer models default display to "omitted" (empty thinking text) — ask for summaries.
+    thinking: dict[str, Any] = {"type": "adaptive"}
+    if include_thinking_display:
+        thinking["display"] = "summarized"
+    payload["thinking"] = thinking
     payload["output_config"] = {"effort": api_effort}
 
     base = int(payload.get("max_tokens") or settings.foundry_max_tokens or 8192)
@@ -140,6 +145,13 @@ def apply_effort_to_payload(
     elif level == "high":
         payload["max_tokens"] = max(base, 16384)
     return payload
+
+
+def _thinking_display_unsupported(status: int, body: str) -> bool:
+    if status < 400:
+        return False
+    lower = (body or "").lower()
+    return "display" in lower and ("thinking" in lower or "unknown" in lower or "invalid" in lower)
 
 
 def _foundry_headers(settings: Settings) -> dict[str, str]:
@@ -195,6 +207,15 @@ async def _foundry_chat(
             headers=_foundry_headers(settings),
             json=payload,
         )
+        if _thinking_display_unsupported(resp.status_code, resp.text):
+            apply_effort_to_payload(
+                payload, effort=effort, settings=settings, include_thinking_display=False
+            )
+            resp = await client.post(
+                url,
+                headers=_foundry_headers(settings),
+                json=payload,
+            )
     if resp.status_code >= 400:
         raise ProviderError(sanitize_provider_error(resp.status_code, resp.text))
     data = resp.json()
@@ -218,8 +239,8 @@ async def _foundry_chat_stream(
     max_tokens: int | None = None,
     effort: str | None = None,
 ):
-    """Yield dict events: delta {text}, then done {text, usage, model, provider}."""
-    from .security import normalize_usage, sanitize_provider_error, validate_foundry_url
+    """Yield dict events: thinking/delta, then done {text, usage, model, provider, blocks}."""
+    from .security import sanitize_provider_error, validate_foundry_url
 
     if not settings.foundry_api_key:
         raise ProviderError("Foundry API key is empty.")
@@ -239,72 +260,107 @@ async def _foundry_chat_stream(
     }
     apply_effort_to_payload(payload, effort=effort, settings=settings)
     parts: list[str] = []
+    thinking_parts: list[str] = []
     usage_acc: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-
     headers = {**_foundry_headers(settings), "Accept": "text/event-stream"}
+
     async with httpx.AsyncClient(timeout=300.0, follow_redirects=False) as client:
-        async with client.stream("POST", url, headers=headers, json=payload) as resp:
-            if resp.status_code >= 400:
-                body = (await resp.aread()).decode("utf-8", errors="replace")
-                raise ProviderError(sanitize_provider_error(resp.status_code, body))
-            event_name = ""
-            async for line in resp.aiter_lines():
-                if not line:
-                    event_name = ""
-                    continue
-                if line.startswith("event:"):
-                    event_name = line[6:].strip()
-                    continue
-                if not line.startswith("data:"):
-                    continue
-                raw = line[5:].strip()
-                if not raw or raw == "[DONE]":
-                    event_name = ""
-                    continue
-                try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError:
-                    event_name = ""
-                    continue
-                dtype = data.get("type") or event_name
-                event_name = ""
-                if dtype == "content_block_delta":
-                    delta = data.get("delta") or {}
-                    text = delta.get("text") if isinstance(delta, dict) else None
-                    if text:
-                        parts.append(str(text))
-                        yield {"type": "delta", "text": str(text)}
-                elif dtype == "message_start":
-                    msg = data.get("message") if isinstance(data.get("message"), dict) else {}
-                    u = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
-                    if u:
-                        usage_acc = normalize_usage(u, provider="foundry")
-                elif dtype == "message_delta":
-                    u = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-                    if u:
-                        partial = normalize_usage(u, provider="foundry")
-                        merged = dict(usage_acc)
-                        for key in ("input_tokens", "output_tokens", "total_tokens"):
-                            if partial.get(key):
-                                merged[key] = partial[key]
-                        if not merged.get("total_tokens"):
-                            merged["total_tokens"] = merged.get("input_tokens", 0) + merged.get(
-                                "output_tokens", 0
-                            )
-                        usage_acc = merged
+        for attempt in range(2):
+            async with client.stream("POST", url, headers=headers, json=payload) as resp:
+                if resp.status_code >= 400:
+                    body = (await resp.aread()).decode("utf-8", errors="replace")
+                    if attempt == 0 and _thinking_display_unsupported(resp.status_code, body):
+                        apply_effort_to_payload(
+                            payload,
+                            effort=effort,
+                            settings=settings,
+                            include_thinking_display=False,
+                        )
+                        continue
+                    raise ProviderError(sanitize_provider_error(resp.status_code, body))
+                async for event in _iter_foundry_sse(
+                    resp, parts=parts, thinking_parts=thinking_parts, usage_acc=usage_acc
+                ):
+                    yield event
+                break
 
     text = "".join(parts).strip()
     if not usage_acc.get("total_tokens"):
         usage_acc["total_tokens"] = usage_acc.get("input_tokens", 0) + usage_acc.get(
             "output_tokens", 0
         )
+    blocks: list[dict[str, Any]] = []
+    think_full = "".join(thinking_parts).strip()
+    if think_full:
+        blocks.append({"type": "thinking", "text": think_full})
+    if text:
+        blocks.append({"type": "text", "text": text})
     yield {
         "type": "done",
         "text": text,
         "usage": usage_acc,
         "model": settings.foundry_model,
         "provider": "foundry",
+        "blocks": blocks,
     }
+
+
+async def _iter_foundry_sse(resp, *, parts: list[str], thinking_parts: list[str], usage_acc: dict[str, int]):
+    from .security import normalize_usage
+
+    event_name = ""
+    async for line in resp.aiter_lines():
+        if not line:
+            event_name = ""
+            continue
+        if line.startswith("event:"):
+            event_name = line[6:].strip()
+            continue
+        if not line.startswith("data:"):
+            continue
+        raw = line[5:].strip()
+        if not raw or raw == "[DONE]":
+            event_name = ""
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            event_name = ""
+            continue
+        dtype = data.get("type") or event_name
+        event_name = ""
+        if dtype == "content_block_delta":
+            delta = data.get("delta") or {}
+            if not isinstance(delta, dict):
+                continue
+            d_type = str(delta.get("type") or "")
+            if d_type == "thinking_delta" or (not d_type and delta.get("thinking")):
+                think = delta.get("thinking")
+                if think:
+                    thinking_parts.append(str(think))
+                    yield {"type": "thinking", "text": str(think)}
+            else:
+                text = delta.get("text")
+                if text:
+                    parts.append(str(text))
+                    yield {"type": "delta", "text": str(text)}
+        elif dtype == "message_start":
+            msg = data.get("message") if isinstance(data.get("message"), dict) else {}
+            u = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
+            if u:
+                usage_acc.clear()
+                usage_acc.update(normalize_usage(u, provider="foundry"))
+        elif dtype == "message_delta":
+            u = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+            if u:
+                partial = normalize_usage(u, provider="foundry")
+                for key in ("input_tokens", "output_tokens", "total_tokens"):
+                    if partial.get(key):
+                        usage_acc[key] = partial[key]
+                if not usage_acc.get("total_tokens"):
+                    usage_acc["total_tokens"] = usage_acc.get("input_tokens", 0) + usage_acc.get(
+                        "output_tokens", 0
+                    )
 
 
 def _aws_chat_stream_sync(
@@ -472,6 +528,8 @@ async def chat_completion_with_tools(
     tools: list[dict[str, Any]] | None = None,
     max_tokens: int | None = None,
     effort: str | None = None,
+    mode: str | None = None,
+    allow_subagents: bool = True,
 ) -> dict[str, Any]:
     """One model step that may return tool_use content blocks (Anthropic-shaped)."""
     s = settings or get_settings()
@@ -486,6 +544,8 @@ async def chat_completion_with_tools(
             settings=s,
             tools=tool_defs,
             max_tokens=max_tokens,
+            mode=mode or "agent",
+            allow_subagents=allow_subagents,
         )
     return await _foundry_chat_with_tools(
         messages,
@@ -526,6 +586,11 @@ async def _foundry_chat_with_tools(
     apply_effort_to_payload(payload, effort=effort, settings=settings)
     async with httpx.AsyncClient(timeout=300.0, follow_redirects=False) as client:
         resp = await client.post(url, headers=_foundry_headers(settings), json=payload)
+        if _thinking_display_unsupported(resp.status_code, resp.text):
+            apply_effort_to_payload(
+                payload, effort=effort, settings=settings, include_thinking_display=False
+            )
+            resp = await client.post(url, headers=_foundry_headers(settings), json=payload)
     if resp.status_code >= 400:
         raise ProviderError(sanitize_provider_error(resp.status_code, resp.text))
     data = resp.json()
@@ -596,6 +661,8 @@ def _aws_chat_with_tools_sync(
     settings: Settings,
     tools: list[dict[str, Any]],
     max_tokens: int | None = None,
+    mode: str = "agent",
+    allow_subagents: bool = True,
 ) -> dict[str, Any]:
     from .security import normalize_usage
     from . import agent_tools
@@ -614,7 +681,9 @@ def _aws_chat_with_tools_sync(
     if system.strip():
         kwargs["system"] = [{"text": system}]
     if tools:
-        kwargs["toolConfig"] = agent_tools.bedrock_tool_config()
+        kwargs["toolConfig"] = agent_tools.bedrock_tool_config(
+            mode=mode, allow_subagents=allow_subagents
+        )
 
     try:
         data = client.converse(**kwargs)

@@ -187,6 +187,13 @@
           <div class="composer-meta">
             <label class="composer-hint" id="composer-hint" for="message-input">Select a chat or start a new one</label>
             <div class="composer-meta-right">
+              <label class="effort-wrap" title="Agent edits files; Plan is read-only research">
+                <span class="effort-label">Mode</span>
+                <select id="mode-select" class="effort-select" aria-label="Chat mode">
+                  <option value="agent" selected>Agent</option>
+                  <option value="plan">Plan</option>
+                </select>
+              </label>
               <label class="effort-wrap" title="Model effort / thinking depth">
                 <span class="effort-label">Effort</span>
                 <select id="effort-select" class="effort-select" aria-label="Effort level">
