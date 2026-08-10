@@ -11,6 +11,7 @@ Shipped in this program: bottom composer, workspace agent tools + diffs, rich Cu
 - Effort selector + visible thinking (summarized display when the model supports it)
 - Plan mode (read-only tools) and `spawn_subagent` for focused research
 - Chat mechanics: edit & resubmit, regenerate, fork, rewind, copy, ⌥↑ prompt recall
+- Prompt outline, Compact summary, and edit-branch ‹ › version switching
 
 ## Explicitly out of scope (for now)
 
@@ -26,7 +27,5 @@ Shipped in this program: bottom composer, workspace agent tools + diffs, rich Cu
 - Streaming token deltas inside a single tool round (not just per text block)
 - Soft apply mode (propose patches without writing until confirm)
 - Per-turn write budget across multiple `apply_patch` calls
-- ChatGPT-style branch version arrows (keep parallel edits)
-- Claude Code–style summarize-from-here / compact
-- Prompt outline sidebar for long threads
 - Message attachments / images
+- Full branch tree map UI (beyond per-message ‹ ›)

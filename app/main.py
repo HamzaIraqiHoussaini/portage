@@ -76,6 +76,15 @@ class ForkChatBody(BaseModel):
     up_to_index: int | None = None
 
 
+class CompactBody(BaseModel):
+    keep_last: int = 6
+
+
+class SwitchBranchBody(BaseModel):
+    message_id: str
+    variant_index: int
+
+
 class WorkspaceBody(BaseModel):
     path: str
 
@@ -360,7 +369,6 @@ async def fork_chat(chat_id: str, body: ForkChatBody):
         local = workspaces.load_local_chat(chat_id, s)
         if not local:
             # Materialize external chat into local first when possible.
-            transcript = None
             thread = None
             if s.cursor_link_enabled and workspaces.cursor_detection(s)["detected"]:
                 thread = chats.load_thread(chat_id, s)
@@ -382,6 +390,81 @@ async def fork_chat(chat_id: str, body: ForkChatBody):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return forked.to_dict()
+
+
+@app.post("/api/chats/{chat_id}/branch")
+async def switch_branch(chat_id: str, body: SwitchBranchBody):
+    """Switch between stored edit-branch variants for a user message."""
+    s = _settings()
+    try:
+        workspaces.validate_chat_id(chat_id)
+        chat = workspaces.switch_message_branch(
+            chat_id,
+            message_id=body.message_id,
+            variant_index=body.variant_index,
+            settings=s,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return chat.to_dict()
+
+
+@app.post("/api/chats/{chat_id}/compact")
+async def compact_chat(chat_id: str, body: CompactBody):
+    """Summarize older turns (Claude Code–style compact) and keep the recent tail."""
+    s = _settings()
+    if not providers.provider_connected(s):
+        raise HTTPException(status_code=400, detail="Connect Foundry or AWS first.")
+    try:
+        workspaces.validate_chat_id(chat_id)
+        chat = workspaces.load_local_chat(chat_id, s)
+        if not chat:
+            raise FileNotFoundError(f"Local chat not found: {chat_id}")
+        keep_last = max(2, min(int(body.keep_last or 6), 40))
+        if len(chat.messages) <= keep_last + 1:
+            raise ValueError("Not enough messages to compact")
+        older = chat.messages[:-keep_last]
+        transcript_lines: list[str] = []
+        for m in older:
+            role = m.role.upper()
+            text = (m.text or "").strip()
+            if not text:
+                continue
+            if len(text) > 1200:
+                text = text[:1200] + "…"
+            transcript_lines.append(f"{role}: {text}")
+        blob = "\n\n".join(transcript_lines)
+        if len(blob) > 60_000:
+            blob = blob[:60_000] + "\n…"
+        prompt = (
+            "Summarize the following chat transcript for continuity. "
+            "Preserve decisions, file paths, constraints, and open questions. "
+            "Be dense and factual — no fluff.\n\n"
+            f"{blob}"
+        )
+        result = await providers.chat_completion(
+            [{"role": "user", "content": prompt}],
+            system="You write concise conversation summaries for coding agents.",
+            settings=s,
+            effort="low",
+            thinking_mode="off",
+            max_tokens=2048,
+        )
+        summary = str(result.get("text") or "").strip()
+        if not summary:
+            raise ValueError("Model returned an empty summary")
+        compacted = workspaces.compact_local_chat(
+            chat_id, summary=summary, keep_last=keep_last, settings=s
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except providers.ProviderError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return compacted.to_dict()
 
 
 @app.get("/api/chats")

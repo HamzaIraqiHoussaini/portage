@@ -115,6 +115,12 @@
             <h1 id="active-title">No conversation open</h1>
           </div>
           <div class="stage-tools">
+            <button type="button" class="ghost tiny" id="outline-btn" hidden title="Jump to prompts">
+              Outline
+            </button>
+            <button type="button" class="ghost tiny" id="compact-btn" hidden title="Compact older turns">
+              Compact
+            </button>
             <div class="checkpoint-wrap" id="checkpoint-wrap" hidden>
               <button type="button" class="ghost tiny" id="checkpoint-btn" aria-haspopup="true" aria-expanded="false">
                 Checkpoints
@@ -163,12 +169,21 @@
 
         <p class="sync-note" id="sync-note" hidden></p>
 
-        <div id="messages" class="messages" aria-live="polite" aria-relevant="additions">
-          <div class="empty-stage" id="empty-stage">
-            <p class="empty-lead" id="empty-lead">Pick a conversation on the left, or start a new one.</p>
-            <div class="empty-actions">
-              <button type="button" class="btn-primary" id="empty-new">New conversation</button>
-              <button type="button" class="ghost" id="empty-connect">Connect provider</button>
+        <div class="stage-body">
+          <aside class="prompt-outline" id="prompt-outline" hidden>
+            <div class="prompt-outline-head">
+              <span>Prompts</span>
+              <button type="button" class="ghost tiny" id="outline-close" aria-label="Close outline">×</button>
+            </div>
+            <ul class="prompt-outline-list" id="prompt-outline-list"></ul>
+          </aside>
+          <div id="messages" class="messages" aria-live="polite" aria-relevant="additions">
+            <div class="empty-stage" id="empty-stage">
+              <p class="empty-lead" id="empty-lead">Pick a conversation on the left, or start a new one.</p>
+              <div class="empty-actions">
+                <button type="button" class="btn-primary" id="empty-new">New conversation</button>
+                <button type="button" class="ghost" id="empty-connect">Connect provider</button>
+              </div>
             </div>
           </div>
         </div>

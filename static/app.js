@@ -807,6 +807,7 @@ function createBubble(role, text, usage = null, extras = {}) {
   div.className = `bubble ${role === "error" ? "error" : role}`;
   if (!cleaned && (tools.length || hasRich)) div.classList.add("tools-only");
   if (index != null) div.dataset.index = String(index);
+  if (extras.messageId) div.dataset.messageId = String(extras.messageId);
   div.dataset.role = role;
   const roleEl = document.createElement("span");
   roleEl.className = "role";
@@ -839,13 +840,15 @@ function createBubble(role, text, usage = null, extras = {}) {
         index,
         isLast,
         rawText: text || "",
+        messageId: extras.messageId || null,
+        branch: extras.branch || null,
       })
     );
   }
   return div;
 }
 
-function createMessageActions({ role, text, index, isLast, rawText }) {
+function createMessageActions({ role, text, index, isLast, rawText, messageId, branch }) {
   const bar = document.createElement("div");
   bar.className = "msg-actions";
   const addBtn = (label, title, onClick) => {
@@ -861,6 +864,37 @@ function createMessageActions({ role, text, index, isLast, rawText }) {
     });
     bar.appendChild(btn);
   };
+  if (role === "user" && branch && branch.count > 1 && messageId) {
+    const nav = document.createElement("span");
+    nav.className = "branch-nav";
+    const prev = document.createElement("button");
+    prev.type = "button";
+    prev.className = "ghost tiny msg-action";
+    prev.textContent = "‹";
+    prev.title = "Previous edit branch";
+    prev.disabled = branch.active <= 0;
+    prev.addEventListener("click", (e) => {
+      e.preventDefault();
+      switchBranch(messageId, branch.active - 1).catch(showErr);
+    });
+    const label = document.createElement("span");
+    label.className = "branch-label";
+    label.textContent = `${branch.active + 1}/${branch.count}`;
+    const next = document.createElement("button");
+    next.type = "button";
+    next.className = "ghost tiny msg-action";
+    next.textContent = "›";
+    next.title = "Next edit branch";
+    next.disabled = branch.active >= branch.count - 1;
+    next.addEventListener("click", (e) => {
+      e.preventDefault();
+      switchBranch(messageId, branch.active + 1).catch(showErr);
+    });
+    nav.appendChild(prev);
+    nav.appendChild(label);
+    nav.appendChild(next);
+    bar.appendChild(nav);
+  }
   addBtn("Copy", "Copy message", async () => {
     try {
       await navigator.clipboard.writeText(String(rawText || text || ""));
@@ -1013,6 +1047,94 @@ async function rewindToIndex(index) {
   state.messages = data.messages || [];
   renderMessages(state.messages);
   await loadChats();
+}
+
+async function switchBranch(messageId, variantIndex) {
+  if (!state.chatId || state.streaming) return;
+  const data = await api(`/api/chats/${encodeURIComponent(state.chatId)}/branch`, {
+    method: "POST",
+    body: JSON.stringify({ message_id: messageId, variant_index: variantIndex }),
+  });
+  state.messages = data.messages || [];
+  renderMessages(state.messages);
+  await loadChats();
+}
+
+async function compactChat() {
+  if (!state.chatId || state.streaming) return;
+  if (state.chatSource && state.chatSource !== "local") {
+    throw new Error("Compact only works on local chats — fork first or continue once.");
+  }
+  const count = (state.messages || []).length;
+  if (count < 8) throw new Error("Need more turns before compacting.");
+  const ok = window.confirm(
+    `Compact older turns into a summary and keep the last ~6 messages?\n\n(${count} messages currently)`
+  );
+  if (!ok) return;
+  const note = $("sync-note");
+  if (note) {
+    note.hidden = false;
+    note.textContent = "Compacting conversation…";
+  }
+  const data = await api(`/api/chats/${encodeURIComponent(state.chatId)}/compact`, {
+    method: "POST",
+    body: JSON.stringify({ keep_last: 6 }),
+  });
+  state.messages = data.messages || [];
+  renderMessages(state.messages);
+  await loadChats();
+  if (note) {
+    note.hidden = false;
+    note.textContent = "Compacted earlier turns into a summary.";
+  }
+}
+
+function renderPromptOutline() {
+  const list = $("prompt-outline-list");
+  const btn = $("outline-btn");
+  if (!list) return;
+  list.innerHTML = "";
+  const prompts = (state.messages || []).filter(
+    (m) => m.role === "user" && String(m.text || "").trim()
+  );
+  if (btn) btn.hidden = !state.chatId || prompts.length < 2;
+  const compactBtn = $("compact-btn");
+  if (compactBtn) {
+    compactBtn.hidden = !state.chatId || state.chatSource !== "local" || (state.messages || []).length < 8;
+  }
+  prompts.forEach((m, i) => {
+    const li = document.createElement("li");
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "prompt-outline-item";
+    const preview = String(m.text || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 72);
+    b.textContent = `${i + 1}. ${preview}${preview.length >= 72 ? "…" : ""}`;
+    b.title = String(m.text || "").slice(0, 400);
+    const idx = typeof m.index === "number" ? m.index : null;
+    b.addEventListener("click", () => {
+      if (idx == null) return;
+      const el = document.querySelector(`.bubble[data-index="${idx}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("flash-target");
+        window.setTimeout(() => el.classList.remove("flash-target"), 1200);
+      }
+    });
+    li.appendChild(b);
+    list.appendChild(li);
+  });
+}
+
+function setOutlineOpen(open) {
+  const panel = $("prompt-outline");
+  const btn = $("outline-btn");
+  if (!panel) return;
+  panel.hidden = !open;
+  if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) renderPromptOutline();
 }
 
 function userPrompts() {
@@ -1718,10 +1840,13 @@ function renderMessages(messages) {
       checkpoint_id: m.checkpoint_id || null,
       index,
       isLast: index === lastIdx || idx === lastIdx,
+      messageId: m.id || null,
+      branch: m.branch || null,
     });
     if (bubble) root.appendChild(bubble);
   });
   root.scrollTop = root.scrollHeight;
+  renderPromptOutline();
 }
 
 function stopStreaming() {
@@ -2222,6 +2347,12 @@ on("mode-select", "change", () => {
 on("diff-close", "click", closeDiffDrawer);
 on("diff-backdrop", "click", closeDiffDrawer);
 on("checkpoint-btn", "click", () => toggleCheckpointMenu().catch(() => {}));
+on("outline-btn", "click", () => {
+  const panel = $("prompt-outline");
+  setOutlineOpen(!!panel?.hidden);
+});
+on("outline-close", "click", () => setOutlineOpen(false));
+on("compact-btn", "click", () => compactChat().catch(showErr));
 document.addEventListener("click", (event) => {
   const wrap = $("checkpoint-wrap");
   if (!wrap || wrap.hidden) return;

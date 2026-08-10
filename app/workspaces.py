@@ -26,6 +26,7 @@ class LocalMessage:
     blocks: list[dict[str, Any]] | None = None
     file_changes: list[dict[str, Any]] | None = None
     checkpoint_id: str | None = None
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 @dataclass
@@ -39,6 +40,8 @@ class LocalChat:
     messages: list[LocalMessage] = field(default_factory=list)
     usage_last: dict[str, int] = field(default_factory=dict)
     usage_total: dict[str, int] = field(default_factory=dict)
+    # ChatGPT-style edit branches: msg_id -> {active, variants:[{text, following}]}
+    branches: dict[str, Any] = field(default_factory=dict)
 
     def to_summary(self) -> dict[str, Any]:
         preview = ""
@@ -62,7 +65,12 @@ class LocalChat:
     def to_dict(self) -> dict[str, Any]:
         msgs: list[dict[str, Any]] = []
         for idx, m in enumerate(self.messages):
-            item: dict[str, Any] = {"role": m.role, "text": m.text, "index": idx}
+            item: dict[str, Any] = {
+                "role": m.role,
+                "text": m.text,
+                "index": idx,
+                "id": m.id,
+            }
             if m.usage:
                 item["usage"] = dict(m.usage)
             if m.blocks:
@@ -71,10 +79,17 @@ class LocalChat:
                 item["file_changes"] = list(m.file_changes)
             if m.checkpoint_id:
                 item["checkpoint_id"] = m.checkpoint_id
+            branch = (self.branches or {}).get(m.id)
+            if isinstance(branch, dict) and branch.get("variants"):
+                item["branch"] = {
+                    "active": int(branch.get("active") or 0),
+                    "count": len(branch.get("variants") or []),
+                }
             msgs.append(item)
         return {
             **self.to_summary(),
             "messages": msgs,
+            "branches": dict(self.branches or {}),
         }
 
 
@@ -285,6 +300,7 @@ def append_local_exchange(
         for key in ("input_tokens", "output_tokens", "total_tokens"):
             total[key] = int(total.get(key) or 0) + int(assistant_usage.get(key) or 0)
         chat.usage_total = total
+    sync_branch_following(chat)
     _save(chat, s)
     return chat
 
@@ -308,6 +324,40 @@ def truncate_local_chat(
     return chat
 
 
+def _serialize_message(m: LocalMessage) -> dict[str, Any]:
+    item: dict[str, Any] = {"role": m.role, "text": m.text, "id": m.id}
+    if m.usage:
+        item["usage"] = dict(m.usage)
+    if m.blocks:
+        item["blocks"] = list(m.blocks)
+    if m.file_changes:
+        item["file_changes"] = list(m.file_changes)
+    if m.checkpoint_id:
+        item["checkpoint_id"] = m.checkpoint_id
+    return item
+
+
+def _deserialize_message(m: dict[str, Any]) -> LocalMessage | None:
+    if m.get("role") not in ("user", "assistant", "system"):
+        return None
+    usage_raw = m.get("usage") if isinstance(m.get("usage"), dict) else None
+    usage = None
+    if usage_raw:
+        usage = {
+            k: int(usage_raw.get(k) or 0)
+            for k in ("input_tokens", "output_tokens", "total_tokens")
+        }
+    return LocalMessage(
+        role=str(m.get("role")),
+        text=str(m.get("text") or ""),
+        usage=usage,
+        blocks=list(m["blocks"]) if isinstance(m.get("blocks"), list) else None,
+        file_changes=list(m["file_changes"]) if isinstance(m.get("file_changes"), list) else None,
+        checkpoint_id=str(m["checkpoint_id"]) if m.get("checkpoint_id") else None,
+        id=str(m["id"]) if m.get("id") else str(uuid.uuid4()),
+    )
+
+
 def edit_local_user_message(
     chat_id: str,
     *,
@@ -315,7 +365,10 @@ def edit_local_user_message(
     text: str,
     settings: Settings | None = None,
 ) -> LocalChat:
-    """Replace a user message and drop all messages after it (edit & resubmit)."""
+    """Replace a user message and drop all messages after it (edit & resubmit).
+
+    Preserves the discarded path as a ChatGPT-style branch variant.
+    """
     s = settings or get_settings()
     chat = load_local_chat(chat_id, s)
     if not chat:
@@ -328,12 +381,139 @@ def edit_local_user_message(
     cleaned = (text or "").strip()
     if not cleaned:
         raise ValueError("Edited message cannot be empty")
+
+    following = [_serialize_message(m) for m in chat.messages[index + 1 :]]
+    group = chat.branches.get(msg.id) if isinstance(chat.branches, dict) else None
+    if not isinstance(group, dict):
+        group = {"active": 0, "variants": []}
+    variants = list(group.get("variants") or [])
+    # Snapshot current path before mutating.
+    if not variants:
+        variants.append({"text": msg.text, "following": following})
+    else:
+        active = int(group.get("active") or 0)
+        if 0 <= active < len(variants):
+            variants[active] = {"text": msg.text, "following": following}
+        else:
+            variants.append({"text": msg.text, "following": following})
+    variants.append({"text": cleaned, "following": []})
+    chat.branches[msg.id] = {"active": len(variants) - 1, "variants": variants}
+
     msg.text = cleaned
     chat.messages = chat.messages[: index + 1]
     chat.updated_at = int(time.time() * 1000)
     if chat.title in ("New conversation", chat.id) and cleaned:
         line = cleaned.splitlines()[0]
         chat.title = line[:80] + ("…" if len(line) > 80 else "")
+    _save(chat, s)
+    return chat
+
+
+def sync_branch_following(chat: LocalChat) -> None:
+    """After a new assistant lands, store following messages on the active edit branch."""
+    if not chat.messages:
+        return
+    # Find the last user message that has a branch group.
+    for i in range(len(chat.messages) - 1, -1, -1):
+        msg = chat.messages[i]
+        if msg.role != "user":
+            continue
+        group = (chat.branches or {}).get(msg.id)
+        if not isinstance(group, dict) or not group.get("variants"):
+            continue
+        active = int(group.get("active") or 0)
+        variants = list(group.get("variants") or [])
+        if not (0 <= active < len(variants)):
+            continue
+        following = [_serialize_message(m) for m in chat.messages[i + 1 :]]
+        variants[active] = {"text": msg.text, "following": following}
+        chat.branches[msg.id] = {"active": active, "variants": variants}
+        return
+
+
+def switch_message_branch(
+    chat_id: str,
+    *,
+    message_id: str,
+    variant_index: int,
+    settings: Settings | None = None,
+) -> LocalChat:
+    """Switch a user message to another stored edit branch (ChatGPT prev/next)."""
+    s = settings or get_settings()
+    chat = load_local_chat(chat_id, s)
+    if not chat:
+        raise FileNotFoundError(f"Local chat not found: {chat_id}")
+    idx = next((i for i, m in enumerate(chat.messages) if m.id == message_id), -1)
+    if idx < 0:
+        raise ValueError("Message not found in chat")
+    msg = chat.messages[idx]
+    if msg.role != "user":
+        raise ValueError("Branches only apply to user messages")
+    group = (chat.branches or {}).get(message_id)
+    if not isinstance(group, dict):
+        raise ValueError("No branches for this message")
+    variants = list(group.get("variants") or [])
+    if variant_index < 0 or variant_index >= len(variants):
+        raise ValueError("variant_index out of range")
+
+    # Save current path into the active variant before switching.
+    active = int(group.get("active") or 0)
+    if 0 <= active < len(variants):
+        variants[active] = {
+            "text": msg.text,
+            "following": [_serialize_message(m) for m in chat.messages[idx + 1 :]],
+        }
+
+    chosen = variants[variant_index] if isinstance(variants[variant_index], dict) else {}
+    msg.text = str(chosen.get("text") or msg.text)
+    following_raw = chosen.get("following") if isinstance(chosen.get("following"), list) else []
+    restored: list[LocalMessage] = []
+    for item in following_raw:
+        if isinstance(item, dict):
+            parsed = _deserialize_message(item)
+            if parsed:
+                restored.append(parsed)
+    chat.messages = chat.messages[: idx + 1] + restored
+    chat.branches[message_id] = {"active": variant_index, "variants": variants}
+    chat.updated_at = int(time.time() * 1000)
+    _save(chat, s)
+    return chat
+
+
+def compact_local_chat(
+    chat_id: str,
+    *,
+    summary: str,
+    keep_last: int = 6,
+    settings: Settings | None = None,
+) -> LocalChat:
+    """Replace older turns with a summary message; keep the last keep_last messages."""
+    s = settings or get_settings()
+    chat = load_local_chat(chat_id, s)
+    if not chat:
+        raise FileNotFoundError(f"Local chat not found: {chat_id}")
+    keep_last = max(0, min(int(keep_last), len(chat.messages)))
+    if len(chat.messages) <= keep_last + 1:
+        raise ValueError("Not enough messages to compact")
+    kept = chat.messages[-keep_last:] if keep_last else []
+    summary_text = (summary or "").strip()
+    if not summary_text:
+        raise ValueError("Summary is empty")
+    marker = LocalMessage(
+        role="user",
+        text=(
+            "# Compacted earlier conversation\n\n"
+            "The following is a concise summary of earlier turns. "
+            "Continue from here with full fidelity to this summary.\n\n"
+            f"{summary_text}"
+        ),
+    )
+    ack = LocalMessage(
+        role="assistant",
+        text="Understood — I'll treat the compacted summary as prior context and continue from the recent turns below.",
+    )
+    chat.messages = [marker, ack, *kept]
+    chat.updated_at = int(time.time() * 1000)
     _save(chat, s)
     return chat
 
@@ -398,6 +578,7 @@ def append_local_assistant(
         for key in ("input_tokens", "output_tokens", "total_tokens"):
             total[key] = int(total.get(key) or 0) + int(assistant_usage.get(key) or 0)
         chat.usage_total = total
+    sync_branch_following(chat)
     _save(chat, s)
     return chat
 
@@ -478,29 +659,14 @@ def workspace_context_block(workspace: str | None, max_files: int = 40) -> str:
 def _from_dict(data: dict[str, Any]) -> LocalChat:
     msgs: list[LocalMessage] = []
     for m in data.get("messages") or []:
-        if m.get("role") not in ("user", "assistant", "system"):
+        if not isinstance(m, dict):
             continue
-        usage_raw = m.get("usage") if isinstance(m.get("usage"), dict) else None
-        usage = None
-        if usage_raw:
-            usage = {
-                k: int(usage_raw.get(k) or 0)
-                for k in ("input_tokens", "output_tokens", "total_tokens")
-            }
-        msgs.append(
-            LocalMessage(
-                role=str(m.get("role")),
-                text=str(m.get("text") or ""),
-                usage=usage,
-                blocks=list(m["blocks"]) if isinstance(m.get("blocks"), list) else None,
-                file_changes=list(m["file_changes"])
-                if isinstance(m.get("file_changes"), list)
-                else None,
-                checkpoint_id=str(m["checkpoint_id"]) if m.get("checkpoint_id") else None,
-            )
-        )
+        parsed = _deserialize_message(m)
+        if parsed:
+            msgs.append(parsed)
     usage_last = data.get("usage_last") if isinstance(data.get("usage_last"), dict) else {}
     usage_total = data.get("usage_total") if isinstance(data.get("usage_total"), dict) else {}
+    branches = data.get("branches") if isinstance(data.get("branches"), dict) else {}
     return LocalChat(
         id=str(data.get("id") or uuid.uuid4()),
         title=str(data.get("title") or "Conversation"),
@@ -511,23 +677,13 @@ def _from_dict(data: dict[str, Any]) -> LocalChat:
         messages=msgs,
         usage_last={k: int(usage_last.get(k) or 0) for k in ("input_tokens", "output_tokens", "total_tokens")},
         usage_total={k: int(usage_total.get(k) or 0) for k in ("input_tokens", "output_tokens", "total_tokens")},
+        branches=dict(branches),
     )
 
 
 def _save(chat: LocalChat, settings: Settings) -> None:
     path = _chat_path(chat.id, settings)
-    messages: list[dict[str, Any]] = []
-    for m in chat.messages:
-        item: dict[str, Any] = {"role": m.role, "text": m.text}
-        if m.usage:
-            item["usage"] = dict(m.usage)
-        if m.blocks:
-            item["blocks"] = list(m.blocks)
-        if m.file_changes:
-            item["file_changes"] = list(m.file_changes)
-        if m.checkpoint_id:
-            item["checkpoint_id"] = m.checkpoint_id
-        messages.append(item)
+    messages = [_serialize_message(m) for m in chat.messages]
     payload = {
         "id": chat.id,
         "title": chat.title,
@@ -538,5 +694,6 @@ def _save(chat: LocalChat, settings: Settings) -> None:
         "messages": messages,
         "usage_last": dict(chat.usage_last or {}),
         "usage_total": dict(chat.usage_total or {}),
+        "branches": dict(chat.branches or {}),
     }
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
