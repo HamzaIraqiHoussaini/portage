@@ -753,26 +753,67 @@ select:focus {
   gap: 6px;
 }
 
+.chat-item-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 2px;
+  border-radius: 14px;
+  transition: background 220ms var(--ease), border-color 220ms var(--ease);
+}
+
+.chat-item-row.active {
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.chat-item-row:hover {
+  background: var(--surface);
+}
+
 .chat-item {
   text-align: left;
-  border: 1px solid transparent;
+  border: 0;
   background: transparent;
   border-radius: 14px;
   padding: 10px 11px;
   cursor: pointer;
   display: grid;
   gap: 3px;
+  min-width: 0;
   transition: background 220ms var(--ease), border-color 220ms var(--ease), transform 160ms var(--ease);
 }
 
+.chat-delete {
+  align-self: start;
+  margin-top: 6px;
+  margin-right: 4px;
+  opacity: 0;
+  font-size: 1rem !important;
+  line-height: 1;
+  min-width: 1.75rem;
+  color: var(--ink-soft);
+}
+
+.chat-item-row:hover .chat-delete,
+.chat-item-row.active .chat-delete,
+.chat-delete:focus-visible {
+  opacity: 1;
+}
+
+.chat-delete:hover,
+.chat-delete:focus-visible {
+  color: #a33;
+}
+
 .chat-item:hover {
-  background: var(--surface);
-  border-color: var(--line);
+  background: transparent;
+  border-color: transparent;
 }
 
 .chat-item.active {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: transparent;
+  border-color: transparent;
 }
 
 .chat-item .t {

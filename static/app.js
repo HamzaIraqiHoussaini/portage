@@ -2392,9 +2392,12 @@ function renderChatList() {
   }
   const active = activeChatKey();
   for (const chat of filtered) {
+    const row = document.createElement("div");
+    row.className = `chat-item-row${chatKey(chat) === active ? " active" : ""}`;
+
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = `chat-item${chatKey(chat) === active ? " active" : ""}`;
+    btn.className = "chat-item";
     const src = chat.source || "local";
     const project = chat.project || chat.workspace || "";
     btn.innerHTML = `
@@ -2407,7 +2410,61 @@ function renderChatList() {
         setConnectStatus(String(err.message || err), "err")
       );
     });
-    root.appendChild(btn);
+    row.appendChild(btn);
+
+    if (chat.deletable) {
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "ghost tiny chat-delete";
+      del.setAttribute("aria-label", `Delete ${chat.title || "chat"}`);
+      del.title = "Delete chat";
+      del.textContent = "×";
+      del.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        deleteChat(chat).catch(showErr);
+      });
+      row.appendChild(del);
+    }
+
+    root.appendChild(row);
+  }
+}
+
+async function deleteChat(chat) {
+  if (!chat?.id || !chat.deletable) {
+    throw new Error("This chat is linked to an app and can’t be deleted from Portage.");
+  }
+  const title = chat.title || "this chat";
+  const ok = window.confirm(`Delete “${title}”?\n\nThis only removes the Portage copy. Linked Cursor / Claude Code chats stay in those apps.`);
+  if (!ok) return;
+  const wasActive = state.chatId === chat.id;
+  if (wasActive && state.streaming) stopStreaming();
+  await api(`/api/chats/${encodeURIComponent(chat.id)}`, { method: "DELETE" });
+  if (wasActive) {
+    state.chatId = null;
+    state.chatSource = null;
+    state.transcriptPath = null;
+    state.messages = [];
+    state.branches = {};
+    state.usageLast = null;
+    state.usageChat = null;
+    $("active-title").textContent = "No conversation open";
+    $("active-title").title = "";
+    $("active-project").textContent = "Select or start a chat";
+    $("messages").innerHTML = "";
+    setComposerEnabled(false);
+    setOutlineOpen(false);
+    setBranchMapOpen(false);
+    updateTokenMeter();
+    refreshPendingBar().catch(() => {});
+    showChatView(false);
+  }
+  await loadChats();
+  const note = $("sync-note");
+  if (note) {
+    note.hidden = false;
+    note.textContent = `Deleted “${title}”.`;
   }
 }
 

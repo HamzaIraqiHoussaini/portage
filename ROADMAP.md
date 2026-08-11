@@ -27,6 +27,7 @@ Shipped in this program: bottom composer, workspace agent tools + diffs, rich Cu
 - Rewind truncates then resubmits the kept user turn with current Mode / Thinking / Effort
 - Fix stage grid so the composer stays pinned when sync-note is hidden
 - Rewind truncates in place (no Fork · chat); Fork remains an explicit action
+- Delete local / imported Portage chats (Cursor / Claude Code linked chats stay)
 
 ## Explicitly out of scope (for now)
 

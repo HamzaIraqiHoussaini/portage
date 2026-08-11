@@ -60,6 +60,7 @@ class LocalChat:
             "workspace": self.workspace,
             "usage_last": dict(self.usage_last or {}),
             "usage_total": dict(self.usage_total or {}),
+            "deletable": True,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -231,6 +232,33 @@ def load_local_chat(chat_id: str, settings: Settings | None = None) -> LocalChat
         return _from_dict(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def delete_local_chat(chat_id: str, settings: Settings | None = None) -> None:
+    """Delete a Portage-local chat and its pending patches / checkpoints.
+
+    Does not touch Cursor / Claude Code app transcripts.
+    """
+    import shutil
+
+    from . import pending_patches
+
+    s = settings or get_settings()
+    path = _chat_path(chat_id, s)
+    if not path.is_file():
+        raise FileNotFoundError(
+            "Only local Portage chats can be deleted. "
+            "Cursor / Claude Code linked chats stay in those apps."
+        )
+    path.unlink(missing_ok=True)
+    try:
+        pending_patches.discard_all(chat_id, s)
+    except ValueError:
+        pass
+    cp_root = (s.conversations_dir.parent / "checkpoints" / chat_id).resolve()
+    root = (s.conversations_dir.parent / "checkpoints").resolve()
+    if cp_root.is_dir() and cp_root.is_relative_to(root):
+        shutil.rmtree(cp_root, ignore_errors=True)
 
 
 def create_local_chat(

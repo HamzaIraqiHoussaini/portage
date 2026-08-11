@@ -659,11 +659,14 @@ async def list_chats():
         for c in chats.discover_transcripts(s):
             d = c.to_dict()
             d["source"] = "cursor"
+            d["deletable"] = False
             external.append(d)
     claude = importers.claude_code_detection(s)
     if getattr(s, "claude_code_link_enabled", True) and claude["detected"]:
         for c in importers.discover_claude_code(s):
-            external.append(c.to_dict())
+            d = c.to_dict()
+            d["deletable"] = False
+            external.append(d)
     merged = local + external
     merged.sort(key=lambda c: c.get("updated_at") or 0, reverse=True)
     return {
@@ -674,6 +677,20 @@ async def list_chats():
         "cursor_active": bool(s.cursor_link_enabled) and cursor["detected"],
         "claude_code_active": bool(getattr(s, "claude_code_link_enabled", True)) and claude["detected"],
     }
+
+
+@app.delete("/api/chats/{chat_id}")
+async def delete_chat(chat_id: str):
+    """Delete a local Portage chat. Linked Cursor / Claude Code chats cannot be deleted here."""
+    s = _settings()
+    try:
+        workspaces.validate_chat_id(chat_id)
+        workspaces.delete_local_chat(chat_id, s)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "id": chat_id}
 
 
 @app.post("/api/chats/new")
