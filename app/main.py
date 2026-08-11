@@ -84,6 +84,8 @@ class AttachmentIn(BaseModel):
 
 class TruncateBody(BaseModel):
     keep_until: int
+    transcript_path: str | None = None
+    source: str | None = None
 
 
 class EditMessageBody(BaseModel):
@@ -153,6 +155,34 @@ def _overlay_settings(payload: dict[str, Any]):
         if hasattr(s, key) and value is not None:
             setattr(s, key, value)
     return s
+
+
+def _load_external_thread(chat_id: str, s, transcript_path: str | None = None):
+    """Load a Cursor / Claude Code thread if present."""
+    transcript = _safe_transcript_path(transcript_path, s) if transcript_path else None
+    if s.cursor_link_enabled and workspaces.cursor_detection(s)["detected"]:
+        thread = chats.load_thread(chat_id, s, transcript_path=transcript)
+        if thread:
+            return thread
+    if getattr(s, "claude_code_link_enabled", True) and importers.claude_code_detection(s)["detected"]:
+        return importers.load_claude_thread(chat_id, s, transcript_path=transcript)
+    return None
+
+
+def _ensure_mutable_local_chat(
+    chat_id: str,
+    s,
+    *,
+    transcript_path: str | None = None,
+):
+    """Return a local chat for mutation; materialize external transcripts in place (no Fork · copy)."""
+    local = workspaces.load_local_chat(chat_id, s)
+    if local:
+        return local
+    thread = _load_external_thread(chat_id, s, transcript_path=transcript_path)
+    if not thread:
+        raise FileNotFoundError(f"Chat not found: {chat_id}")
+    return importers.fork_thread_to_local(thread, settings=s)
 
 
 @app.get("/")
@@ -490,11 +520,20 @@ async def delete_workspace(path: str):
 
 @app.post("/api/chats/{chat_id}/truncate")
 async def truncate_chat(chat_id: str, body: TruncateBody):
-    """Rewind conversation: keep messages through keep_until, drop the rest."""
+    """Rewind conversation: keep messages through keep_until, drop the rest.
+
+    External Cursor/Claude transcripts are materialized once into a local chat
+    (same title, no Fork · prefix), then truncated in place.
+    """
     s = _settings()
     try:
         workspaces.validate_chat_id(chat_id)
-        chat = workspaces.truncate_local_chat(chat_id, keep_until=body.keep_until, settings=s)
+        local = _ensure_mutable_local_chat(
+            chat_id, s, transcript_path=body.transcript_path
+        )
+        chat = workspaces.truncate_local_chat(
+            local.id, keep_until=body.keep_until, settings=s
+        )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
@@ -520,28 +559,13 @@ async def edit_chat_message(chat_id: str, body: EditMessageBody):
 
 @app.post("/api/chats/{chat_id}/fork")
 async def fork_chat(chat_id: str, body: ForkChatBody):
-    """Fork a local chat into a new thread up to a message index."""
+    """Fork a chat into a new thread up to a message index (explicit Fork action)."""
     s = _settings()
     try:
         workspaces.validate_chat_id(chat_id)
-        local = workspaces.load_local_chat(chat_id, s)
-        if not local:
-            # Materialize external chat into local first when possible.
-            thread = None
-            if s.cursor_link_enabled and workspaces.cursor_detection(s)["detected"]:
-                thread = chats.load_thread(chat_id, s)
-            if (
-                not thread
-                and getattr(s, "claude_code_link_enabled", True)
-                and importers.claude_code_detection(s)["detected"]
-            ):
-                thread = importers.load_claude_thread(chat_id, s)
-            if not thread:
-                raise FileNotFoundError(f"Chat not found: {chat_id}")
-            local = importers.fork_thread_to_local(thread, settings=s)
-            chat_id = local.id
+        local = _ensure_mutable_local_chat(chat_id, s)
         forked = workspaces.fork_local_chat(
-            chat_id, up_to_index=body.up_to_index, settings=s
+            local.id, up_to_index=body.up_to_index, settings=s
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e

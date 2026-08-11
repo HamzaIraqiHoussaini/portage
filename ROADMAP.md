@@ -26,6 +26,7 @@ Shipped in this program: bottom composer, workspace agent tools + diffs, rich Cu
 - Multimodal same-role history merge (Anthropic-safe)
 - Rewind truncates then resubmits the kept user turn with current Mode / Thinking / Effort
 - Fix stage grid so the composer stays pinned when sync-note is hidden
+- Rewind truncates in place (no Fork · chat); Fork remains an explicit action
 
 ## Explicitly out of scope (for now)
 

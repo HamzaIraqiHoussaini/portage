@@ -1434,7 +1434,7 @@ function createMessageActions({ role, text, index, isLast, rawText, messageId, b
     rewindBtn.type = "button";
     rewindBtn.className = "ghost tiny msg-action";
     rewindBtn.textContent = "Rewind";
-    rewindBtn.title = "Rewind here and regenerate with current Mode / Thinking / Effort";
+    rewindBtn.title = "Remove later messages and continue from here (does not create a fork)";
     rewindBtn.addEventListener("click", (e) => {
       e.preventDefault();
       more.removeAttribute("open");
@@ -1572,23 +1572,6 @@ async function rewindToIndex(index) {
   const later = msgs.length - index - 1;
   const endsOnUser = target.role === "user";
 
-  if (state.chatSource && state.chatSource !== "local") {
-    const ok = window.confirm(
-      endsOnUser
-        ? "Rewind continues as a local copy from this message and regenerates the reply with your current Mode / Thinking / Effort."
-        : "Rewind continues as a local copy, keeping messages through this point. External transcripts stay unchanged."
-    );
-    if (!ok) return;
-    const forked = await api(`/api/chats/${encodeURIComponent(state.chatId)}/fork`, {
-      method: "POST",
-      body: JSON.stringify({ up_to_index: index }),
-    });
-    await loadChats();
-    await openChat(forked.id, "local", null);
-    if (endsOnUser) await resubmitAfterRewind();
-    return;
-  }
-
   if (later <= 0) {
     // Already at this point — if it ends on a user turn with no reply, still regenerate.
     if (endsOnUser) {
@@ -1607,14 +1590,28 @@ async function rewindToIndex(index) {
       : `Remove ${later} message(s) after this point?`
   );
   if (!ok) return;
+
   const data = await api(`/api/chats/${encodeURIComponent(state.chatId)}/truncate`, {
     method: "POST",
-    body: JSON.stringify({ keep_until: index }),
+    body: JSON.stringify({
+      keep_until: index,
+      transcript_path: state.transcriptPath || null,
+      source: state.chatSource || null,
+    }),
   });
-  state.messages = data.messages || [];
-  state.branches = data.branches || state.branches || {};
-  renderMessages(state.messages);
-  await loadChats();
+
+  // External transcripts materialize into a local chat id — switch without a Fork · title.
+  if (data.id && data.id !== state.chatId) {
+    await loadChats();
+    await openChat(data.id, "local", null);
+  } else {
+    state.messages = data.messages || [];
+    state.branches = data.branches || state.branches || {};
+    state.chatSource = data.source || "local";
+    state.transcriptPath = null;
+    renderMessages(state.messages);
+    await loadChats();
+  }
   if (endsOnUser) await resubmitAfterRewind();
 }
 
