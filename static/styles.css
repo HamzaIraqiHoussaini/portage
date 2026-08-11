@@ -1332,7 +1332,13 @@ select:focus {
 .stage {
   position: relative;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "head"
+    "note"
+    "body"
+    "pending"
+    "composer";
   padding: 16px 16px 14px;
   height: calc(100dvh - 28px);
   max-height: calc(100dvh - 28px);
@@ -1340,6 +1346,7 @@ select:focus {
 }
 
 .stage-head {
+  grid-area: head;
   display: flex;
   align-items: flex-start;
   gap: 12px;
@@ -1349,6 +1356,7 @@ select:focus {
 }
 
 .stage-body {
+  grid-area: body;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   min-height: 0;
@@ -1807,6 +1815,7 @@ select.effort-select:focus-visible {
 }
 
 .sync-note {
+  grid-area: note;
   margin: 8px 8px 0;
   font-size: 0.76rem;
   color: var(--ink-soft);
@@ -1852,6 +1861,7 @@ select.effort-select:focus-visible {
 }
 
 .composer {
+  grid-area: composer;
   padding: 6px 4px 4px;
   min-width: 0;
   background: var(--surface-raised);
@@ -1937,6 +1947,7 @@ select.effort-select:focus-visible {
 }
 
 .pending-bar {
+  grid-area: pending;
   display: flex;
   align-items: center;
   justify-content: space-between;

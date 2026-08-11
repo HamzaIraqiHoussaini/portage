@@ -25,6 +25,7 @@ Shipped in this program: bottom composer, workspace agent tools + diffs, rich Cu
 - Propose Accept conflicts as HTTP 409 with conflict UI
 - Multimodal same-role history merge (Anthropic-safe)
 - Rewind truncates then resubmits the kept user turn with current Mode / Thinking / Effort
+- Fix stage grid so the composer stays pinned when sync-note is hidden
 
 ## Explicitly out of scope (for now)
 
