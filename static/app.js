@@ -975,7 +975,11 @@ async function applyPendingPatches(pending, stripEl = null) {
     await refreshPendingBar();
     if (conflicts.length) {
       const bar = $("pending-bar");
-      if (bar && !bar.hidden) bar.classList.add("has-conflict");
+      if (bar && !bar.hidden) {
+        bar.classList.add("has-conflict");
+        const hint = bar.querySelector(".pending-bar-hint");
+        if (hint) hint.textContent = "Conflict — file changed on disk since propose";
+      }
     }
   } catch (err) {
     const msg =
