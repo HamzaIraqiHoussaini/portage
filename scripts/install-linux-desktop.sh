@@ -13,8 +13,9 @@ cp "$ICON_SRC" "$ICON_DST"
 cat > "$APP_DIR/portage.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
-Version=1.0
+Version=1.5
 Name=Portage
+X-Portage-Version=$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null || echo 0.4.0)
 Comment=Carry coding chats across Cursor, Claude Code, ChatGPT, Antigravity to Foundry or Bedrock
 Exec=$ROOT/Portage.sh
 Path=$ROOT

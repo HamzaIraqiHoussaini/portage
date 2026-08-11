@@ -18,7 +18,7 @@ from .security import (
     MAX_MESSAGE_CHARS,
     assert_json_depth,
 )
-from .workspaces import LocalChat, LocalMessage, _save, create_local_chat
+from .workspaces import LocalChat, LocalMessage, _save, create_local_chat, load_local_chat
 
 SAFE_ID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -434,10 +434,41 @@ def fork_thread_to_local(
     thread: ChatThread,
     *,
     settings: Settings | None = None,
+    chat_id: str | None = None,
+    preserve_id: bool = False,
 ) -> LocalChat:
+    """Materialize an external thread into a local Portage chat.
+
+    When ``preserve_id`` is True (Rewind / truncate), keep the original chat id so
+    the UI does not jump to a new conversation. Cursor origin fields are stored so
+    write-back can still update the Agent UI after materialization.
+    """
     s = settings or get_settings()
-    chat = create_local_chat(title=thread.summary.title, settings=s)
-    chat.source = thread.summary.source or "import"
+    preferred = (chat_id or "").strip() if preserve_id else ""
+    if preferred:
+        existing = load_local_chat(preferred, s)
+        if existing:
+            return existing
+        now = int(time.time() * 1000)
+        chat = LocalChat(
+            id=preferred,
+            title=(thread.summary.title or "Conversation")[:200],
+            created_at=now,
+            updated_at=now,
+            workspace=None,
+            source="local",
+            messages=[],
+        )
+    else:
+        chat = create_local_chat(title=thread.summary.title, settings=s)
+        chat.source = "local"
+
+    src = (thread.summary.source or "import").strip().lower()
+    transcript_path = (thread.summary.transcript_path or "").strip() or None
+    if src == "cursor" or (transcript_path and "agent-transcripts" in transcript_path):
+        chat.origin_chat_id = thread.summary.id
+        chat.origin_transcript_path = transcript_path
+
     chat.messages = []
     for m in thread.messages:
         if m.role not in ("user", "assistant"):

@@ -76,9 +76,10 @@ class ChatSummary:
     transcript_path: str
     source: str = "agent-transcript"
     preview: str = ""
+    suggested_workspace: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "id": self.id,
             "title": self.title,
             "updated_at": self.updated_at,
@@ -87,6 +88,9 @@ class ChatSummary:
             "source": self.source,
             "preview": self.preview,
         }
+        if self.suggested_workspace:
+            data["suggested_workspace"] = self.suggested_workspace
+        return data
 
 
 @dataclass
@@ -240,6 +244,156 @@ def _human_project_name(slug: str) -> str:
     return name.replace("-", " ")
 
 
+def cursor_project_slug_from_transcript(transcript_path: str | Path | None) -> str | None:
+    """Extract `Users-…` slug from `~/.cursor/projects/<slug>/agent-transcripts/...`."""
+    if not transcript_path:
+        return None
+    try:
+        parts = Path(transcript_path).expanduser().resolve().parts
+    except OSError:
+        return None
+    for i, part in enumerate(parts):
+        if part == "projects" and i + 1 < len(parts):
+            slug = parts[i + 1]
+            if slug and slug not in ("empty-window",) and not slug.startswith("var-folders"):
+                return slug
+    return None
+
+
+def resolve_cursor_project_path(slug: str | None) -> Path | None:
+    """Map Cursor's `Users-hamza-Documents-Foo` project id back to a real folder.
+
+    Cursor replaces path separators (and spaces) with `-`. We rebuild by walking
+    the filesystem and taking the longest matching directory name at each step.
+    """
+    if not slug or slug in ("empty-window",) or slug.startswith("var-folders"):
+        return None
+    # Prefer exact folder URI from Cursor workspaceStorage when available.
+    mapped = _workspace_storage_folder_map().get(slug)
+    if mapped and mapped.is_dir():
+        return mapped
+
+    parts = slug.split("-")
+    if len(parts) < 2:
+        return None
+    if parts[0] == "Users" and len(parts) >= 2:
+        cur = Path("/Users") / parts[1]
+        i = 2
+    elif parts[0] == "home" and len(parts) >= 2:
+        cur = Path("/home") / parts[1]
+        i = 2
+    else:
+        return None
+    try:
+        if not cur.is_dir():
+            return None
+    except OSError:
+        return None
+
+    while i < len(parts):
+        matched = False
+        for j in range(len(parts), i, -1):
+            chunk = parts[i:j]
+            for joiner in (" ", "-", "_"):
+                name = joiner.join(chunk)
+                cand = cur / name
+                try:
+                    if cand.exists():
+                        cur = cand
+                        i = j
+                        matched = True
+                        break
+                except OSError:
+                    continue
+            if matched:
+                break
+            # Also try concatenated (no joiner) for odd encodings.
+            name = "".join(chunk)
+            cand = cur / name
+            try:
+                if cand.exists():
+                    cur = cand
+                    i = j
+                    matched = True
+                    break
+            except OSError:
+                pass
+            if matched:
+                break
+        if not matched:
+            cand = cur / parts[i]
+            try:
+                if cand.exists():
+                    cur = cand
+                    i += 1
+                    continue
+            except OSError:
+                return None
+            return None
+    try:
+        return cur if cur.is_dir() else None
+    except OSError:
+        return None
+
+
+def _workspace_storage_folder_map() -> dict[str, Path]:
+    """slug → path from Cursor User/workspaceStorage/*/workspace.json (best-effort)."""
+    root = (
+        Path.home()
+        / "Library"
+        / "Application Support"
+        / "Cursor"
+        / "User"
+        / "workspaceStorage"
+    )
+    out: dict[str, Path] = {}
+    if not root.is_dir():
+        return out
+    try:
+        for d in root.iterdir():
+            wf = d / "workspace.json"
+            if not wf.is_file():
+                continue
+            try:
+                data = json.loads(wf.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            folder = data.get("folder") if isinstance(data, dict) else None
+            if not isinstance(folder, str) or not folder.startswith("file://"):
+                continue
+            # file:///Users/hamza/Documents/Pioneer%20RI
+            from urllib.parse import unquote, urlparse
+
+            parsed = urlparse(folder)
+            path = Path(unquote(parsed.path))
+            if not path.is_absolute():
+                continue
+            # Encode like Cursor: strip leading /, replace / and spaces with -
+            slug = str(path).lstrip("/").replace("/", "-").replace(" ", "-")
+            out[slug] = path
+    except OSError:
+        return out
+    return out
+
+
+def suggest_workspace_from_transcript(transcript_path: str | Path | None) -> str | None:
+    slug = cursor_project_slug_from_transcript(transcript_path)
+    path = resolve_cursor_project_path(slug)
+    return str(path) if path else None
+
+
+_FAKE_TOOL_MARK_RE = re.compile(r"\[tool_use:[^\]]+\]", re.IGNORECASE)
+_FAKE_TOOL_RESULT_RE = re.compile(r"\[tool_result\]", re.IGNORECASE)
+
+
+def strip_fake_tool_markers(text: str) -> str:
+    """Remove Cursor-style `[tool_use:Name]` text the model emits when tools are off."""
+    cleaned = _FAKE_TOOL_MARK_RE.sub("", text or "")
+    cleaned = _FAKE_TOOL_RESULT_RE.sub("", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
 def _title_from_messages(messages: list[ChatMessage], fallback: str) -> str:
     for m in messages:
         if m.role == "user" and m.text.strip():
@@ -304,6 +458,7 @@ def discover_transcripts(settings: Settings | None = None) -> list[ChatSummary]:
                     project=_human_project_name(project_dir.name),
                     transcript_path=str(jsonl),
                     preview=preview,
+                    suggested_workspace=suggest_workspace_from_transcript(jsonl),
                 )
             )
 
@@ -431,7 +586,7 @@ def messages_for_foundry(thread: ChatThread, *, max_messages: int = 80) -> list[
     for m in thread.messages:
         if m.role not in ("user", "assistant"):
             continue
-        text = m.text.strip()
+        text = strip_fake_tool_markers(m.text)
         if not text:
             continue
         # Drop pure tool chatter for model context size

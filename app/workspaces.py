@@ -42,6 +42,9 @@ class LocalChat:
     usage_total: dict[str, int] = field(default_factory=dict)
     # ChatGPT-style edit branches: msg_id -> {active, variants:[{text, following}]}
     branches: dict[str, Any] = field(default_factory=dict)
+    # When materialized from a Cursor agent chat, keep pointers for write-back.
+    origin_chat_id: str | None = None
+    origin_transcript_path: str | None = None
 
     def to_summary(self) -> dict[str, Any]:
         preview = ""
@@ -149,6 +152,74 @@ def add_workspace(path_str: str, settings: Settings | None = None) -> dict[str, 
         normalized.append({"path": str(path), "name": path.name})
     save_bridge_config({"workspaces": normalized}, settings)
     return {"path": str(path), "name": path.name, "exists": True}
+
+
+def ensure_workspace(path_str: str | None, settings: Settings | None = None) -> str | None:
+    """Link a folder if needed and return its absolute path, or None on failure."""
+    if not path_str or not str(path_str).strip():
+        return None
+    try:
+        return add_workspace(path_str, settings)["path"]
+    except (FileNotFoundError, NotADirectoryError, OSError, PermissionError):
+        return None
+
+
+def probe_disk_access(settings: Settings | None = None) -> dict[str, Any]:
+    """Best-effort macOS access checks — FDA is not always required."""
+    s = settings or get_settings()
+    home = Path.home()
+
+    def _can_list(path: Path) -> bool:
+        try:
+            next(path.iterdir(), None)
+            return True
+        except StopIteration:
+            return True
+        except PermissionError:
+            return False
+        except OSError as e:
+            # EPERM / EACCES
+            if getattr(e, "errno", None) in (1, 13):
+                return False
+            return path.exists()
+
+    def _can_read_file(path: Path) -> bool:
+        try:
+            if not path.exists():
+                return False
+            with path.open("rb") as f:
+                f.read(1)
+            return True
+        except PermissionError:
+            return False
+        except OSError as e:
+            if getattr(e, "errno", None) in (1, 13):
+                return False
+            return False
+
+    docs = home / "Documents"
+    desktop = home / "Desktop"
+    downloads = home / "Downloads"
+    cursor_projects = s.projects_dir
+    state_db = s.state_vscdb
+
+    return {
+        "documents": _can_list(docs) if docs.exists() else None,
+        "desktop": _can_list(desktop) if desktop.exists() else None,
+        "downloads": _can_list(downloads) if downloads.exists() else None,
+        "cursor_projects": _can_list(cursor_projects) if cursor_projects.exists() else None,
+        "cursor_state_db": _can_read_file(state_db) if state_db.exists() else None,
+        "bundle_id": "app.portage.desktop",
+        "notes": [
+            "Cursor-style access: link folders via Settings (or auto-link from a Cursor chat). "
+            "macOS then grants Files and Folders for that path — prefer this over Full Disk Access.",
+            "Full Disk Access is only needed if Portage cannot read/write "
+            "~/Library/Application Support/Cursor (write-back) or protected folders after linking.",
+            "Portage.app is currently unsigned; if macOS forgets permissions after updates, "
+            "re-add Portage under System Settings → Privacy & Security → Files and Folders "
+            "(and Full Disk Access only if write-back still fails).",
+        ],
+    }
 
 
 def remove_workspace(path_str: str, settings: Settings | None = None) -> None:
@@ -650,6 +721,8 @@ def fork_local_chat(
         messages=copied,
         usage_last=dict(src.usage_last or {}),
         usage_total={},
+        origin_chat_id=src.origin_chat_id,
+        origin_transcript_path=src.origin_transcript_path,
     )
     _save(chat, s)
     return chat
@@ -695,6 +768,8 @@ def _from_dict(data: dict[str, Any]) -> LocalChat:
     usage_last = data.get("usage_last") if isinstance(data.get("usage_last"), dict) else {}
     usage_total = data.get("usage_total") if isinstance(data.get("usage_total"), dict) else {}
     branches = data.get("branches") if isinstance(data.get("branches"), dict) else {}
+    origin_chat_id = data.get("origin_chat_id")
+    origin_transcript_path = data.get("origin_transcript_path")
     return LocalChat(
         id=str(data.get("id") or uuid.uuid4()),
         title=str(data.get("title") or "Conversation"),
@@ -706,6 +781,8 @@ def _from_dict(data: dict[str, Any]) -> LocalChat:
         usage_last={k: int(usage_last.get(k) or 0) for k in ("input_tokens", "output_tokens", "total_tokens")},
         usage_total={k: int(usage_total.get(k) or 0) for k in ("input_tokens", "output_tokens", "total_tokens")},
         branches=dict(branches),
+        origin_chat_id=str(origin_chat_id) if origin_chat_id else None,
+        origin_transcript_path=str(origin_transcript_path) if origin_transcript_path else None,
     )
 
 
@@ -724,4 +801,8 @@ def _save(chat: LocalChat, settings: Settings) -> None:
         "usage_total": dict(chat.usage_total or {}),
         "branches": dict(chat.branches or {}),
     }
+    if chat.origin_chat_id:
+        payload["origin_chat_id"] = chat.origin_chat_id
+    if chat.origin_transcript_path:
+        payload["origin_transcript_path"] = chat.origin_transcript_path
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")

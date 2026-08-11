@@ -6,10 +6,11 @@
 #   Exec=<checkout>/Portage.sh
 #   Path=<checkout>
 #   Icon=<user icons>/portage.svg
+# App version: see VERSION (currently 0.4.0)
 
 [Desktop Entry]
 Type=Application
-Version=1.0
+Version=1.5
 Name=Portage
 Comment=Carry coding chats across Cursor, Claude Code, ChatGPT, Antigravity to Foundry or Bedrock
 TryExec=./Portage.sh

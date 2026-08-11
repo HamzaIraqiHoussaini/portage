@@ -7,10 +7,12 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 ROOT = Path(SPECPATH).resolve()
+VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip() or "0.4.0"
 
 datas = [
     (str(ROOT / "static"), "static"),
     (str(ROOT / ".env.example"), "."),
+    (str(ROOT / "VERSION"), "."),
 ]
 binaries = []
 hiddenimports = [
@@ -31,6 +33,11 @@ hiddenimports = [
     "app.skills",
     "app.chats",
     "app.writeback",
+    "app.importers",
+    "app.agent_loop",
+    "app.agent_tools",
+    "app.checkpoints",
+    "app.pending_patches",
     "boto3",
     "webview",
 ]
@@ -59,6 +66,12 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+_win_version = None
+if sys.platform == "win32":
+    ver_path = ROOT / "scripts" / "file_version_info.txt"
+    if ver_path.is_file():
+        _win_version = str(ver_path)
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -75,6 +88,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    version=_win_version,
 )
 
 coll = COLLECT(
@@ -97,7 +111,17 @@ if sys.platform == "darwin":
         info_plist={
             "CFBundleDisplayName": "Portage",
             "CFBundleName": "Portage",
-            "CFBundleShortVersionString": "0.3.0",
+            "CFBundleShortVersionString": VERSION,
+            "CFBundleVersion": VERSION,
             "NSHighResolutionCapable": True,
+            "NSDocumentsFolderUsageDescription": (
+                "Portage links your project folders so the agent can read and edit files there."
+            ),
+            "NSDownloadsFolderUsageDescription": (
+                "Portage may access Downloads only when you link a workspace under that folder."
+            ),
+            "NSDesktopFolderUsageDescription": (
+                "Portage may access Desktop only when you link a workspace under that folder."
+            ),
         },
     )

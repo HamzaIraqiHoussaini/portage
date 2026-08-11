@@ -33,7 +33,7 @@ from .security import (
     validate_foundry_url,
 )
 
-app = FastAPI(title="Portage", version="0.3.0")
+app = FastAPI(title="Portage", version="0.4.0")
 app.add_middleware(LocalhostOnlyMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 
@@ -157,6 +157,34 @@ def _overlay_settings(payload: dict[str, Any]):
     return s
 
 
+def _workspace_for_request(
+    *,
+    body_workspace: str | None,
+    settings,
+    stored: str | None = None,
+    transcript_path: str | None = None,
+) -> str | None:
+    """Resolve linked workspace; auto-link Cursor project folder when missing."""
+    try:
+        ws = workspaces.resolve_allowed_workspace(
+            body_workspace or stored,
+            settings=settings,
+            allow_stored=stored,
+        )
+    except ValueError:
+        ws = None
+    if ws:
+        return ws
+    if body_workspace:
+        linked = workspaces.ensure_workspace(body_workspace, settings)
+        if linked:
+            return linked
+    if transcript_path:
+        suggested = chats.suggest_workspace_from_transcript(transcript_path)
+        return workspaces.ensure_workspace(suggested, settings)
+    return None
+
+
 def _load_external_thread(chat_id: str, s, transcript_path: str | None = None):
     """Load a Cursor / Claude Code thread if present."""
     transcript = _safe_transcript_path(transcript_path, s) if transcript_path else None
@@ -174,6 +202,7 @@ def _ensure_mutable_local_chat(
     s,
     *,
     transcript_path: str | None = None,
+    preserve_id: bool = True,
 ):
     """Return a local chat for mutation; materialize external transcripts in place (no Fork · copy)."""
     local = workspaces.load_local_chat(chat_id, s)
@@ -182,7 +211,9 @@ def _ensure_mutable_local_chat(
     thread = _load_external_thread(chat_id, s, transcript_path=transcript_path)
     if not thread:
         raise FileNotFoundError(f"Chat not found: {chat_id}")
-    return importers.fork_thread_to_local(thread, settings=s)
+    return importers.fork_thread_to_local(
+        thread, settings=s, chat_id=chat_id, preserve_id=preserve_id
+    )
 
 
 @app.get("/")
@@ -224,6 +255,7 @@ async def status():
         ),
         "settings_path": str(s.settings_json),
         "workspaces": workspaces.list_workspaces(s),
+        "disk_access": workspaces.probe_disk_access(s),
         "import_sources": [
             {"id": "cursor", "label": "Cursor", "mode": "auto"},
             {"id": "claude-code", "label": "Claude Code", "mode": "auto"},
@@ -505,9 +537,34 @@ async def reject_pending_patch(body: PatchRejectBody):
 async def post_workspace(body: WorkspaceBody):
     try:
         item = workspaces.add_workspace(body.path, _settings())
-    except (FileNotFoundError, NotADirectoryError) as e:
+    except (FileNotFoundError, NotADirectoryError, OSError, PermissionError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"workspace": item, "workspaces": workspaces.list_workspaces(_settings())}
+
+
+@app.post("/api/open-privacy-settings")
+async def open_privacy_settings():
+    """Open macOS Privacy pane (Files & Folders). FDA is manual if still needed."""
+    import subprocess
+    import sys
+
+    if sys.platform != "darwin":
+        return {"opened": False, "reason": "macOS only"}
+    # Prefer Files and Folders (scoped, Cursor-like). Full Disk Access is separate.
+    targets = [
+        [
+            "open",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders",
+        ],
+        ["open", "/System/Library/PreferencePanes/Security.prefPane"],
+    ]
+    for cmd in targets:
+        try:
+            subprocess.run(cmd, check=False, timeout=5)
+            return {"opened": True, "target": cmd[-1]}
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return {"opened": False, "reason": "could not launch System Settings"}
 
 
 @app.delete("/api/workspaces")
@@ -763,6 +820,11 @@ async def get_chat(chat_id: str, path: str | None = None):
         if thread:
             data = thread.to_dict()
             data["source"] = "cursor"
+            suggested = thread.summary.suggested_workspace or chats.suggest_workspace_from_transcript(
+                thread.summary.transcript_path
+            )
+            if suggested:
+                data["suggested_workspace"] = suggested
             return data
     if getattr(s, "claude_code_link_enabled", True) and importers.claude_code_detection(s)["detected"]:
         thread = importers.load_claude_thread(chat_id, s, transcript_path=transcript)
@@ -1044,10 +1106,11 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
             user_already_saved and history and history[-1]["role"] == "user"
         )
         try:
-            workspace = workspaces.resolve_allowed_workspace(
-                body.workspace or local.workspace,
+            workspace = _workspace_for_request(
+                body_workspace=body.workspace,
                 settings=s,
-                allow_stored=local.workspace,
+                stored=local.workspace,
+                transcript_path=None,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
@@ -1069,10 +1132,11 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
         if cursor_thread and body.writeback and s.writeback_enabled:
             source = "cursor"
             history = chats.messages_for_foundry(cursor_thread, max_messages=MAX_HISTORY_MESSAGES)
-            try:
-                workspace = workspaces.resolve_allowed_workspace(body.workspace, settings=s)
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e)) from e
+            workspace = _workspace_for_request(
+                body_workspace=body.workspace,
+                settings=s,
+                transcript_path=cursor_thread.summary.transcript_path,
+            )
         elif cursor_thread or claude_thread:
             thread = cursor_thread or claude_thread
             assert thread is not None
@@ -1085,14 +1149,18 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
                 for m in local.messages
                 if m.role in ("user", "assistant") and m.text.strip()
             ]
-            try:
-                workspace = workspaces.resolve_allowed_workspace(
-                    body.workspace or local.workspace,
-                    settings=s,
-                    allow_stored=local.workspace,
-                )
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e)) from e
+            tp = thread.summary.transcript_path if cursor_thread else None
+            workspace = _workspace_for_request(
+                body_workspace=body.workspace or local.workspace,
+                settings=s,
+                stored=local.workspace,
+                transcript_path=tp,
+            )
+            if workspace and not local.workspace:
+                local.workspace = workspace
+                from .workspaces import _save as _save_local_chat
+
+                _save_local_chat(local, s)
             cursor_thread = None
         else:
             raise HTTPException(status_code=404, detail="Chat not found")
@@ -1260,6 +1328,7 @@ def _finalize_chat(
     cursor_thread = ctx["cursor_thread"]
     wb: dict[str, Any] | None = None
     usage = usage if isinstance(usage, dict) else {}
+    assistant_text = chats.strip_fake_tool_markers(assistant_text)
 
     if source == "local":
         if ctx.get("user_already_saved"):
@@ -1285,6 +1354,24 @@ def _finalize_chat(
             )
         local_after = workspaces.load_local_chat(chat_id, s)
         usage_total = (local_after.usage_total if local_after else {}) or {}
+        # Materialized Cursor chats keep origin_* so Write-back still updates Agent UI.
+        if (
+            body.writeback
+            and s.writeback_enabled
+            and local_after
+            and local_after.origin_chat_id
+            and local_after.origin_transcript_path
+        ):
+            try:
+                wb = writeback.write_back(
+                    local_after.origin_chat_id,
+                    local_after.origin_transcript_path,
+                    user_text=ctx["display_message"],
+                    assistant_text=assistant_text,
+                    settings=s,
+                )
+            except FileNotFoundError as e:
+                wb = {"enabled": True, "error": str(e)}
     elif body.writeback and s.writeback_enabled and cursor_thread:
         wb = writeback.write_back(
             body.chat_id,

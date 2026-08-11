@@ -27,7 +27,7 @@ source .venv/bin/activate
 pip install -q --upgrade pip
 pip install -q -r requirements-desktop.txt
 
-echo "Building Portage with $(python --version)…"
+echo "Building Portage $(tr -d '[:space:]' <VERSION 2>/dev/null || echo '?') with $(python --version)…"
 pyinstaller --noconfirm --clean Portage.spec
 
 echo

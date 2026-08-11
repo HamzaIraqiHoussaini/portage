@@ -454,6 +454,13 @@ select:focus {
   color: var(--danger);
 }
 
+.hint {
+  margin: 0 0 10px;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  line-height: 1.4;
+}
+
 .source-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

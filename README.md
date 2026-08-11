@@ -101,9 +101,9 @@ Token use for the last reply, this chat, and the session shows in the stage head
 
 - **Providers:** Microsoft Foundry (Anthropic Messages) or AWS Bedrock Converse
 - **Imports:** Cursor & Claude Code (auto) · ChatGPT `conversations.json` · Antigravity JSON/Markdown exports
-- **Workspaces:** link local folders for context
+- **Workspaces:** link local folders (Cursor chats auto-link their project folder)
 - **Skills:** type `/` to invoke agent skills
-- **Optional Cursor write-back** into the original transcript
+- **Optional Cursor write-back** into the Agent UI store + transcript (quit Cursor for a clean sync)
 - **Security-minded local app:** localhost-only API mutations, SSRF checks on Foundry URLs, CSP, sanitization, size limits
 
 ---

@@ -636,20 +636,13 @@ function escapeHtml(value) {
 }
 
 function extractTools(text) {
-  const tools = [];
+  // Strip Cursor-style text markers. Do NOT treat them as real tool use —
+  // the model invents `[tool_use:Grep]` when no workspace/tools are linked.
   let cleaned = String(text || "");
-  cleaned = cleaned.replace(/\[tool_use:([^\]]+)\]/g, (_, name) => {
-    tools.push(String(name).trim());
-    return "";
-  });
-  cleaned = cleaned.replace(/\[tool_result\]/g, () => {
-    tools.push("result");
-    return "";
-  });
+  cleaned = cleaned.replace(/\[tool_use:[^\]]+\]/gi, "");
+  cleaned = cleaned.replace(/\[tool_result\]/gi, "");
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
-  const unique = [];
-  for (const t of tools) if (t && !unique.includes(t)) unique.push(t);
-  return { text: cleaned, tools: unique };
+  return { text: cleaned, tools: [] };
 }
 
 function protectMath(text) {
@@ -1914,7 +1907,7 @@ function setStreamPhase(bubble, phaseEl, phase, detail) {
 }
 
 function paintStreamingBody(body, text) {
-  body.innerHTML = formatMessageHtml(text || "");
+  body.innerHTML = formatMessageHtml(extractTools(text || "").text);
 }
 
 function appendToolTimeline(timeline, event) {
@@ -2166,6 +2159,17 @@ async function loadStatus() {
   $("writeback-toggle").checked = !!s.writeback_enabled;
   $("cursor-link-toggle").checked = !!s.cursor_link_enabled;
 
+  const disk = s.disk_access || {};
+  const diskEl = $("disk-access-status");
+  if (diskEl) {
+    const flag = (v) => (v === true ? "ok" : v === false ? "blocked" : "—");
+    diskEl.textContent =
+      `Access · Documents ${flag(disk.documents)} · Cursor projects ${flag(disk.cursor_projects)} · ` +
+      `Cursor DB ${flag(disk.cursor_state_db)}. ` +
+      `Link folders first; use Full Disk Access only if Cursor write-back still fails.`;
+    diskEl.title = (disk.notes || []).join("\n");
+  }
+
   const cursor = s.cursor || {};
   if (!cursor.detected) {
     $("cursor-status").textContent = "Not detected";
@@ -2337,9 +2341,35 @@ async function addWorkspace() {
     $("workspace-path").value = "";
     renderWorkspaces(data.workspaces || []);
     $("workspace-select").value = data.workspace.path;
+    updateWorkspaceCue(!!state.chatId && state.connected);
   } catch (err) {
     setConnectStatus(String(err.message || err), "err");
   }
+}
+
+async function ensureSuggestedWorkspace(path) {
+  if (!path) return null;
+  const select = $("workspace-select");
+  if (select && [...select.options].some((o) => o.value === path)) {
+    select.value = path;
+    updateWorkspaceCue(!!state.chatId && state.connected);
+    loadWorkspaceFiles(path).catch(() => {});
+    return path;
+  }
+  const data = await api("/api/workspaces", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+  renderWorkspaces(data.workspaces || []);
+  if (select) select.value = data.workspace?.path || path;
+  updateWorkspaceCue(!!state.chatId && state.connected);
+  loadWorkspaceFiles(select?.value || path).catch(() => {});
+  const note = $("sync-note");
+  if (note) {
+    note.hidden = false;
+    note.textContent = `Linked workspace from Cursor project: ${data.workspace?.name || path}`;
+  }
+  return data.workspace?.path || path;
 }
 
 async function removeWorkspace(path) {
@@ -2549,6 +2579,9 @@ async function openChat(id, sourceHint, transcriptPath) {
       $("active-project").textContent = src;
     }
     if (thread.workspace) $("workspace-select").value = thread.workspace;
+    else if (thread.suggested_workspace) {
+      await ensureSuggestedWorkspace(thread.suggested_workspace).catch(() => {});
+    }
     setComposerEnabled(true);
     setOutlineOpen(false);
     setBranchMapOpen(false);
@@ -2564,7 +2597,8 @@ async function openChat(id, sourceHint, transcriptPath) {
       // Only surface notes that change behavior — skip generic tips.
       if (state.chatSource === "cursor" && $("writeback-toggle").checked) {
         note.hidden = false;
-        note.textContent = "Cursor chat — replies can write back to the transcript.";
+        note.textContent =
+          "Cursor chat — Write-back updates Agent UI (quit Cursor fully before/after for a clean sync).";
       } else if (state.chatSource === "claude-code") {
         note.hidden = false;
         note.textContent = "Claude Code — first reply continues as a local copy.";
@@ -3124,6 +3158,9 @@ on("cursor-link-toggle", "change", toggleCursorLink);
 on("claude-code-toggle", "change", toggleClaudeCodeLink);
 on("writeback-toggle", "change", toggleWriteback);
 on("workspace-add", "click", addWorkspace);
+on("open-privacy-settings", "click", () => {
+  api("/api/open-privacy-settings", { method: "POST" }).catch(() => {});
+});
 on("new-chat", "click", () => newChat().catch((e) => setConnectStatus(String(e.message || e), "err")));
 on("empty-new", "click", () => newChat().catch((e) => setConnectStatus(String(e.message || e), "err")));
 on("empty-connect", "click", () => openSettings({ focusConnect: true }));

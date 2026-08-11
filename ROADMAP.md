@@ -28,6 +28,8 @@ Shipped in this program: bottom composer, workspace agent tools + diffs, rich Cu
 - Fix stage grid so the composer stays pinned when sync-note is hidden
 - Rewind truncates in place (no Fork · chat); Fork remains an explicit action
 - Delete local / imported Portage chats (Cursor / Claude Code linked chats stay)
+- Cursor Write-back also updates Agent UI bubbles in `state.vscdb` (not JSONL-only); origin kept after materialize
+- Auto-link Cursor project folder as workspace; strip fake `[tool_use:]` text markers; macOS Files&Folders guidance (FDA last resort)
 
 ## Explicitly out of scope (for now)
 

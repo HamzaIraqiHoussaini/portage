@@ -19,12 +19,20 @@
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.3.0</string>
+  <string>0.4.0</string>
   <key>CFBundleVersion</key>
-  <string>0.3.0</string>
+  <string>0.4.0</string>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Portage links your project folders so the agent can read and edit files there — the same model as Cursor’s Open Folder.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Portage may access Downloads only when you link a workspace under that folder.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Portage may access Desktop only when you link a workspace under that folder.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Portage may access external volumes only when you explicitly link a workspace there.</string>
 </dict>
 </plist>
