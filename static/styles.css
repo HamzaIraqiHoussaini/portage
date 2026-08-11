@@ -1867,10 +1867,8 @@ select.effort-select:focus-visible {
   width: 100%;
   overflow-wrap: anywhere;
   word-break: break-word;
-}
   padding: 0;
   animation: msg-in 480ms var(--ease) both;
-  width: 100%;
 }
 
 @keyframes msg-in {
