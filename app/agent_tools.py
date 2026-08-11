@@ -166,6 +166,10 @@ class ToolError(RuntimeError):
     pass
 
 
+class ConflictError(ToolError):
+    """Disk state no longer matches the proposal (HTTP 409)."""
+
+
 def resolve_in_workspace(workspace: str, rel: str | None) -> Path:
     root = Path(workspace).expanduser().resolve()
     if not root.is_dir():
@@ -463,7 +467,7 @@ def _apply_patch(
     before_hash = content_sha256(before)
     if expected_before_hash is not None and expected_before_hash != "":
         if before_hash != expected_before_hash:
-            raise ToolError(
+            raise ConflictError(
                 "File changed on disk since this proposal. "
                 "Discard and re-propose, or resolve the conflict manually."
             )

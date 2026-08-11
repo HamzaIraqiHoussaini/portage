@@ -1946,6 +1946,23 @@ select.effort-select:focus-visible {
   background: color-mix(in srgb, var(--accent-soft) 70%, var(--surface-raised));
 }
 
+.pending-bar.has-conflict {
+  border-color: color-mix(in srgb, #c23b3b 42%, var(--line));
+  background: color-mix(in srgb, #c23b3b 10%, var(--surface-raised));
+}
+
+.pending-bar.has-conflict .pending-bar-hint {
+  color: #a33;
+}
+
+[data-theme="dark"] .pending-bar.has-conflict .pending-bar-hint {
+  color: #f07178;
+}
+
+.files-changed.has-conflict {
+  border-color: color-mix(in srgb, #c23b3b 40%, var(--line));
+}
+
 .pending-bar[hidden] {
   display: none !important;
 }

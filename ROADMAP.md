@@ -21,6 +21,9 @@ Shipped in this program: bottom composer, workspace agent tools + diffs, rich Cu
 - Diff drawer Accept / Discard when reviewing pending proposals
 - Bedrock tool-round streaming (live deltas during AWS agent tool rounds)
 - Edit branch map panel (Branches) for switching forks beyond per-message ‹ ›
+- Pending-patch TTL (7-day prune) + slim list payloads
+- Propose Accept conflicts as HTTP 409 with conflict UI
+- Multimodal same-role history merge (Anthropic-safe)
 
 ## Explicitly out of scope (for now)
 

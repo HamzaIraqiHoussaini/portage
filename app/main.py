@@ -350,12 +350,16 @@ async def restore_checkpoint(body: RestoreBody):
 
 
 @app.get("/api/chats/{chat_id}/pending-patches")
-async def list_pending_patches(chat_id: str):
+async def list_pending_patches(chat_id: str, include_diff: bool = False):
     try:
         workspaces.validate_chat_id(chat_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return {"patches": pending_patches.list_pending(chat_id, _settings())}
+    return {
+        "patches": pending_patches.list_pending(
+            chat_id, _settings(), include_diff=include_diff
+        )
+    }
 
 
 @app.post("/api/patches/apply")
@@ -397,6 +401,8 @@ async def apply_pending_patch(body: PatchApplyBody):
         }
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    except agent_tools.ConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except (ValueError, agent_tools.ToolError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -444,6 +450,8 @@ async def apply_all_pending_patches(body: PatchApplyAllBody):
                         "op": fc.get("op") or patch.get("op"),
                     }
                 )
+            except agent_tools.ConflictError as e:
+                errors.append({"patch_id": pid, "error": str(e), "code": "conflict"})
             except Exception as e:  # noqa: BLE001
                 errors.append({"patch_id": pid, "error": str(e)})
         return {"ok": not errors, "applied": applied, "errors": errors}
@@ -880,6 +888,35 @@ def _sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _as_content_blocks(content: Any) -> list[dict[str, Any]]:
+    """Normalize Anthropic message content into a list of content blocks."""
+    if content is None:
+        return []
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    if isinstance(content, list):
+        out: list[dict[str, Any]] = []
+        for block in content:
+            if isinstance(block, dict):
+                out.append(block)
+            elif isinstance(block, str) and block:
+                out.append({"type": "text", "text": block})
+        return out
+    return [{"type": "text", "text": str(content)}]
+
+
+def _merge_message_content(prev: Any, cur: Any) -> Any:
+    """Merge consecutive same-role contents without dropping multimodal blocks."""
+    if isinstance(prev, str) and isinstance(cur, str):
+        if not prev:
+            return cur
+        if not cur:
+            return prev
+        return prev + "\n\n" + cur
+    blocks = _as_content_blocks(prev) + _as_content_blocks(cur)
+    return blocks
+
+
 def _prepare_chat(body: ChatBody) -> dict[str, Any]:
     s = _settings()
     if not providers.provider_connected(s):
@@ -1087,12 +1124,9 @@ def _prepare_chat(body: ChatBody) -> dict[str, Any]:
     merged: list[dict[str, Any]] = []
     for item in history:
         if merged and merged[-1]["role"] == item["role"]:
-            prev = merged[-1]["content"]
-            cur = item["content"]
-            if isinstance(prev, str) and isinstance(cur, str):
-                merged[-1]["content"] = prev + "\n\n" + cur
-            else:
-                merged.append(dict(item))
+            merged[-1]["content"] = _merge_message_content(
+                merged[-1]["content"], item["content"]
+            )
         else:
             merged.append(dict(item))
     while merged and merged[0]["role"] != "user":

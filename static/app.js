@@ -266,7 +266,12 @@ async function api(path, opts = {}) {
   }
   const res = await fetch(path, { ...opts, headers });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(formatDetail(data.detail) || data.message || res.statusText);
+  if (!res.ok) {
+    const err = new Error(formatDetail(data.detail) || data.message || res.statusText);
+    err.status = res.status;
+    err.code = res.status === 409 ? "conflict" : null;
+    throw err;
+  }
   return data;
 }
 
@@ -931,10 +936,18 @@ async function applyPendingPatches(pending, stripEl = null) {
     });
     const applied = result.applied || [];
     const errors = result.errors || [];
+    const conflicts = errors.filter((e) => e.code === "conflict" || /changed on disk/i.test(e.error || ""));
     const note = $("sync-note");
     if (note) {
       note.hidden = false;
-      if (errors.length) {
+      if (conflicts.length && applied.length) {
+        note.textContent = `Accepted ${applied.length}; ${conflicts.length} conflicted (file changed on disk).`;
+      } else if (conflicts.length && !applied.length) {
+        note.textContent =
+          conflicts.length === 1
+            ? "Conflict: file changed on disk since this proposal. Discard and re-propose."
+            : `${conflicts.length} conflicts: files changed on disk. Discard and re-propose.`;
+      } else if (errors.length) {
         note.textContent = `Accepted ${applied.length}, ${errors.length} failed.`;
       } else {
         note.textContent = `Accepted ${applied.length} patch${applied.length === 1 ? "" : "es"}.`;
@@ -944,7 +957,9 @@ async function applyPendingPatches(pending, stripEl = null) {
     const leftovers = pending.filter((p) => failedIds.has(p.patch_id));
     if (stripEl) {
       if (errors.length && leftovers.length) {
-        stripEl.replaceWith(createFilesChangedStrip(leftovers, { compact: false }));
+        const next = createFilesChangedStrip(leftovers, { compact: false });
+        if (conflicts.length) next.classList.add("has-conflict");
+        stripEl.replaceWith(next);
       } else {
         stripEl.classList.add("accepted");
         stripEl.querySelectorAll(".accept-btn, .reject-btn").forEach((b) => {
@@ -958,8 +973,17 @@ async function applyPendingPatches(pending, stripEl = null) {
       }
     }
     await refreshPendingBar();
+    if (conflicts.length) {
+      const bar = $("pending-bar");
+      if (bar && !bar.hidden) bar.classList.add("has-conflict");
+    }
   } catch (err) {
-    window.alert(err.message || String(err));
+    const msg =
+      err.code === "conflict" || err.status === 409
+        ? err.message || "File changed on disk since this proposal."
+        : err.message || String(err);
+    window.alert(msg);
+    await refreshPendingBar();
   }
 }
 
@@ -994,6 +1018,9 @@ let pendingBarCache = [];
 async function refreshPendingBar() {
   const bar = $("pending-bar");
   if (!bar) return;
+  bar.classList.remove("has-conflict");
+  const hint = bar.querySelector(".pending-bar-hint");
+  if (hint) hint.textContent = "Edits stay pending until you Accept";
   if (!state.chatId || state.chatSource !== "local") {
     pendingBarCache = [];
     bar.hidden = true;
@@ -1005,6 +1032,7 @@ async function refreshPendingBar() {
       ...p,
       patch_id: p.id || p.patch_id,
       pending: true,
+      diff: p.diff || "",
     }));
   } catch {
     pendingBarCache = [];
@@ -1015,6 +1043,19 @@ async function refreshPendingBar() {
   if (countEl) countEl.textContent = `${n} proposed`;
   const accept = $("pending-accept");
   if (accept) accept.textContent = n === 1 ? "Accept" : "Accept all";
+}
+
+async function loadPendingPatchesWithDiffs() {
+  if (!state.chatId) return [];
+  const data = await api(
+    `/api/chats/${encodeURIComponent(state.chatId)}/pending-patches?include_diff=true`
+  );
+  return (data.patches || []).map((p) => ({
+    ...p,
+    patch_id: p.id || p.patch_id,
+    pending: true,
+    diff: p.diff || "",
+  }));
 }
 
 function renderDiffHtml(diffText) {
@@ -3033,9 +3074,18 @@ on("pending-discard", "click", () => {
   if (!pendingBarCache.length) return;
   rejectPendingPatches(pendingBarCache).catch(showErr);
 });
-on("pending-review", "click", () => {
-  if (!pendingBarCache.length) return;
-  openDiffDrawer(pendingBarCache);
+on("pending-review", "click", async () => {
+  try {
+    const patches = await loadPendingPatchesWithDiffs();
+    pendingBarCache = patches;
+    if (!patches.length) {
+      await refreshPendingBar();
+      return;
+    }
+    openDiffDrawer(patches);
+  } catch (err) {
+    showErr(err);
+  }
 });
 on("attach-btn", "click", () => $("attach-input")?.click());
 on("attach-input", "change", (event) => {
