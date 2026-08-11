@@ -1827,7 +1827,8 @@ select.effort-select:focus-visible {
 .messages {
   display: flex;
   flex-direction: column;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   min-height: 0;
   min-width: 0;
   padding: 18px 8px 20px;
@@ -1862,6 +1863,11 @@ select.effort-select:focus-visible {
 .bubble {
   max-width: var(--measure);
   margin: 0 auto 1.35rem;
+  min-width: 0;
+  width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
   padding: 0;
   animation: msg-in 480ms var(--ease) both;
   width: 100%;

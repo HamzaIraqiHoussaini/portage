@@ -1434,7 +1434,7 @@ function createMessageActions({ role, text, index, isLast, rawText, messageId, b
     rewindBtn.type = "button";
     rewindBtn.className = "ghost tiny msg-action";
     rewindBtn.textContent = "Rewind";
-    rewindBtn.title = "Remove everything after this message";
+    rewindBtn.title = "Rewind here and regenerate with current Mode / Thinking / Effort";
     rewindBtn.addEventListener("click", (e) => {
       e.preventDefault();
       more.removeAttribute("open");
@@ -1549,33 +1549,73 @@ async function forkFromIndex(index) {
   }
 }
 
+async function resubmitAfterRewind() {
+  const msgs = state.messages || [];
+  if (!msgs.length || state.streaming) return;
+  const last = msgs[msgs.length - 1];
+  if (!last || last.role !== "user") return;
+  const text = String(last.text || "").trim();
+  if (!text) return;
+  const note = $("sync-note");
+  if (note) {
+    note.hidden = false;
+    note.textContent = "Rewound — regenerating with your current Mode / Thinking / Effort…";
+  }
+  await sendMessageStream(text, { userAlreadySaved: true });
+}
+
 async function rewindToIndex(index) {
   if (!state.chatId || state.streaming) return;
+  const msgs = state.messages || [];
+  const target = msgs[index];
+  if (!target) return;
+  const later = msgs.length - index - 1;
+  const endsOnUser = target.role === "user";
+
   if (state.chatSource && state.chatSource !== "local") {
     const ok = window.confirm(
-      "Rewind works on a local copy. Continue? (External transcripts stay unchanged.)"
+      endsOnUser
+        ? "Rewind continues as a local copy from this message and regenerates the reply with your current Mode / Thinking / Effort."
+        : "Rewind continues as a local copy, keeping messages through this point. External transcripts stay unchanged."
     );
     if (!ok) return;
-    // Fork first then truncate the fork.
     const forked = await api(`/api/chats/${encodeURIComponent(state.chatId)}/fork`, {
       method: "POST",
       body: JSON.stringify({ up_to_index: index }),
     });
     await loadChats();
     await openChat(forked.id, "local", null);
+    if (endsOnUser) await resubmitAfterRewind();
     return;
   }
-  const msgs = state.messages || [];
-  const later = msgs.length - index - 1;
-  if (later <= 0) return;
-  if (!window.confirm(`Remove ${later} message(s) after this point?`)) return;
+
+  if (later <= 0) {
+    // Already at this point — if it ends on a user turn with no reply, still regenerate.
+    if (endsOnUser) {
+      const ok = window.confirm(
+        "No later messages to remove. Generate a reply for this message with your current Mode / Thinking / Effort?"
+      );
+      if (!ok) return;
+      await resubmitAfterRewind();
+    }
+    return;
+  }
+
+  const ok = window.confirm(
+    endsOnUser
+      ? `Remove ${later} message(s) after this point and regenerate the reply with your current Mode / Thinking / Effort?`
+      : `Remove ${later} message(s) after this point?`
+  );
+  if (!ok) return;
   const data = await api(`/api/chats/${encodeURIComponent(state.chatId)}/truncate`, {
     method: "POST",
     body: JSON.stringify({ keep_until: index }),
   });
   state.messages = data.messages || [];
+  state.branches = data.branches || state.branches || {};
   renderMessages(state.messages);
   await loadChats();
+  if (endsOnUser) await resubmitAfterRewind();
 }
 
 async function switchBranch(messageId, variantIndex) {
@@ -2573,6 +2613,8 @@ async function sendMessageStream(text, opts = {}) {
   } else if (opts.regenerate) {
     const last = [...root.querySelectorAll(".bubble")].pop();
     if (last && last.dataset.role === "assistant") last.remove();
+  } else if (opts.userAlreadySaved) {
+    // User turn already on screen (edit/rewind) — do not duplicate the bubble.
   } else {
     const userBubble = createBubble("user", text);
     if (userBubble) root.appendChild(userBubble);
@@ -2629,7 +2671,9 @@ async function sendMessageStream(text, opts = {}) {
     }
     if (opts.editIndex != null) payload.edit_index = opts.editIndex;
     if (opts.regenerate) payload.regenerate = true;
-    if (opts.editIndex != null || opts.regenerate) payload.user_already_saved = true;
+    if (opts.editIndex != null || opts.regenerate || opts.userAlreadySaved) {
+      payload.user_already_saved = true;
+    }
 
     const resp = await fetch("/api/chat/stream", {
       method: "POST",

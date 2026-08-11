@@ -24,6 +24,7 @@ Shipped in this program: bottom composer, workspace agent tools + diffs, rich Cu
 - Pending-patch TTL (7-day prune) + slim list payloads
 - Propose Accept conflicts as HTTP 409 with conflict UI
 - Multimodal same-role history merge (Anthropic-safe)
+- Rewind truncates then resubmits the kept user turn with current Mode / Thinking / Effort
 
 ## Explicitly out of scope (for now)
 
